@@ -109,6 +109,8 @@ pub struct MemoryFilter {
     pub kinds: Option<Vec<MemoryKind>>,
     pub min_importance: Option<f32>,
     pub metadata_eq: Option<HashMap<String, serde_json::Value>>,
+    pub created_after_ms: Option<i64>,
+    pub created_before_ms: Option<i64>,
 }
 
 impl MemoryFilter {
@@ -121,6 +123,8 @@ impl MemoryFilter {
             kinds: Some(kinds.into_iter().collect()),
             min_importance: None,
             metadata_eq: None,
+            created_after_ms: None,
+            created_before_ms: None,
         }
     }
 
@@ -133,6 +137,12 @@ impl MemoryFilter {
         let mut map = self.metadata_eq.unwrap_or_default();
         map.insert(key.into(), val.into());
         self.metadata_eq = Some(map);
+        self
+    }
+
+    pub fn with_time_range(mut self, after_ms: Option<i64>, before_ms: Option<i64>) -> Self {
+        self.created_after_ms = after_ms;
+        self.created_before_ms = before_ms;
         self
     }
 }

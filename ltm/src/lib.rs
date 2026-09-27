@@ -253,6 +253,18 @@ impl MemoryStore {
                     }
                 }
 
+                if let Some(after) = req.filters.created_after_ms {
+                    if record.created_at_ms < after {
+                        continue;
+                    }
+                }
+
+                if let Some(before) = req.filters.created_before_ms {
+                    if record.created_at_ms > before {
+                        continue;
+                    }
+                }
+
                 let distance = vivy_core::distance::cosine(&req.query_embedding, &record.embedding);
                 let similarity = (1.0 - (distance / 2.0)).clamp(0.0, 1.0);
                 let importance = record.importance.clamp(0.0, 1.0);

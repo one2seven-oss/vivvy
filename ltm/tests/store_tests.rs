@@ -669,3 +669,257 @@ fn test_format_context_template_placeholders() {
     assert!(formatted.contains("* [preference] User prefers dark mode UI theme. (relevance:"));
     assert!(formatted.contains("=== END CONTEXT ==="));
 }
+
+#[test]
+fn test_time_window_filtering_in_recall() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+
+    let store = MemoryStore::open(config).unwrap();
+    let scope = MemoryScope::new("acme", "temporal-test").unwrap();
+
+    // Insert 3 records at T1 (1000ms), 3 at T2 (2000ms), 3 at T3 (3000ms)
+    let mut ids_t1 = Vec::new();
+    let mut ids_t2 = Vec::new();
+    let mut ids_t3 = Vec::new();
+
+    for i in 0..3 {
+        let id = store
+            .remember(RememberRequest {
+                operation_id: None,
+                scope: scope.clone(),
+                content: format!("T1 record {}", i),
+                embedding: vec![1.0, 0.0, 0.0],
+                kind: MemoryKind::Fact,
+                importance: 0.8,
+                expires_at_ms: None,
+                metadata: HashMap::new(),
+                source: HashMap::new(),
+            })
+            .unwrap();
+        ids_t1.push(id);
+    }
+
+    for i in 0..3 {
+        let id = store
+            .remember(RememberRequest {
+                operation_id: None,
+                scope: scope.clone(),
+                content: format!("T2 record {}", i),
+                embedding: vec![1.0, 0.0, 0.0],
+                kind: MemoryKind::Fact,
+                importance: 0.8,
+                expires_at_ms: None,
+                metadata: HashMap::new(),
+                source: HashMap::new(),
+            })
+            .unwrap();
+        ids_t2.push(id);
+    }
+
+    for i in 0..3 {
+        let id = store
+            .remember(RememberRequest {
+                operation_id: None,
+                scope: scope.clone(),
+                content: format!("T3 record {}", i),
+                embedding: vec![1.0, 0.0, 0.0],
+                kind: MemoryKind::Fact,
+                importance: 0.8,
+                expires_at_ms: None,
+                metadata: HashMap::new(),
+                source: HashMap::new(),
+            })
+            .unwrap();
+        ids_t3.push(id);
+    }
+
+    // Set timestamps in SQLite database
+    let db_conn = rusqlite::Connection::open(dir.path().join("memory.db")).unwrap();
+    for id in &ids_t1 {
+        db_conn
+            .execute("UPDATE memories SET created_at_ms = 1000 WHERE id = ?", rusqlite::params![id])
+            .unwrap();
+    }
+    for id in &ids_t2 {
+        db_conn
+            .execute("UPDATE memories SET created_at_ms = 2000 WHERE id = ?", rusqlite::params![id])
+            .unwrap();
+    }
+    for id in &ids_t3 {
+        db_conn
+            .execute("UPDATE memories SET created_at_ms = 3000 WHERE id = ?", rusqlite::params![id])
+            .unwrap();
+    }
+
+    // 1. Filter exact window: created_after_ms = 2000, created_before_ms = 2000
+    let filter_t2 = MemoryFilter::default().with_time_range(Some(2000), Some(2000));
+    let recall_t2 = store
+        .recall(RecallRequest {
+            scope: scope.clone(),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            query_text: None,
+            limit: 10,
+            filters: filter_t2,
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert_eq!(recall_t2.items.len(), 3);
+    for item in &recall_t2.items {
+        assert_eq!(item.memory.created_at_ms, 2000);
+        assert!(item.memory.content.contains("T2"));
+    }
+
+    // 2. Filter lower bound only: created_after_ms = 2000
+    let filter_after_t2 = MemoryFilter::default().with_time_range(Some(2000), None);
+    let recall_after_t2 = store
+        .recall(RecallRequest {
+            scope: scope.clone(),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            query_text: None,
+            limit: 10,
+            filters: filter_after_t2,
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert_eq!(recall_after_t2.items.len(), 6);
+    for item in &recall_after_t2.items {
+        assert!(item.memory.created_at_ms >= 2000);
+    }
+
+    // 3. Filter upper bound only: created_before_ms = 2000
+    let filter_before_t2 = MemoryFilter::default().with_time_range(None, Some(2000));
+    let recall_before_t2 = store
+        .recall(RecallRequest {
+            scope: scope.clone(),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            query_text: None,
+            limit: 10,
+            filters: filter_before_t2,
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert_eq!(recall_before_t2.items.len(), 6);
+    for item in &recall_before_t2.items {
+        assert!(item.memory.created_at_ms <= 2000);
+    }
+}
+
+#[test]
+fn test_time_window_empty_range() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+
+    let store = MemoryStore::open(config).unwrap();
+    let scope = MemoryScope::new("acme", "empty-range-test").unwrap();
+
+    store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope: scope.clone(),
+            content: "Sample record".into(),
+            embedding: vec![1.0, 0.0, 0.0],
+            kind: MemoryKind::Fact,
+            importance: 0.8,
+            expires_at_ms: None,
+            metadata: HashMap::new(),
+            source: HashMap::new(),
+        })
+        .unwrap();
+
+    // Range with created_after_ms (3000) > created_before_ms (1000)
+    let filter_invalid = MemoryFilter::default().with_time_range(Some(3000), Some(1000));
+    let recall = store
+        .recall(RecallRequest {
+            scope,
+            query_embedding: vec![1.0, 0.0, 0.0],
+            query_text: None,
+            limit: 10,
+            filters: filter_invalid,
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert_eq!(recall.items.len(), 0);
+}
+
+#[test]
+fn test_fts_time_window_filtering() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+
+    let store = MemoryStore::open(config).unwrap();
+    let scope = MemoryScope::new("acme", "fts-temporal").unwrap();
+
+    let id1 = store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope: scope.clone(),
+            content: "Quantum computing algorithms research paper".into(),
+            embedding: vec![0.0, 0.0, 1.0],
+            kind: MemoryKind::Fact,
+            importance: 0.8,
+            expires_at_ms: None,
+            metadata: HashMap::new(),
+            source: HashMap::new(),
+        })
+        .unwrap();
+
+    let id2 = store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope: scope.clone(),
+            content: "Quantum computing hardware breakthrough".into(),
+            embedding: vec![0.0, 0.0, 1.0],
+            kind: MemoryKind::Fact,
+            importance: 0.8,
+            expires_at_ms: None,
+            metadata: HashMap::new(),
+            source: HashMap::new(),
+        })
+        .unwrap();
+
+    let db_conn = rusqlite::Connection::open(dir.path().join("memory.db")).unwrap();
+    db_conn
+        .execute("UPDATE memories SET created_at_ms = 1000 WHERE id = ?", rusqlite::params![id1])
+        .unwrap();
+    db_conn
+        .execute("UPDATE memories SET created_at_ms = 5000 WHERE id = ?", rusqlite::params![id2])
+        .unwrap();
+
+    // Query FTS for "Quantum" with time window created_after_ms = 4000
+    let filter = MemoryFilter::default().with_time_range(Some(4000), None);
+    let recall = store
+        .recall(RecallRequest {
+            scope,
+            query_embedding: vec![0.0, 0.0, 1.0],
+            query_text: Some("Quantum".into()),
+            limit: 10,
+            filters: filter,
+            include_explanations: true,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert_eq!(recall.items.len(), 1);
+    assert_eq!(recall.items[0].memory.id, id2);
+}

@@ -436,7 +436,7 @@ impl PyMemoryStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (tenant_id, namespace, query_embedding, query_text=None, limit=5, agent_id=None, user_id=None, include_explanations=true, mmr_lambda=None, filter_metadata=None))]
+    #[pyo3(signature = (tenant_id, namespace, query_embedding, query_text=None, limit=5, agent_id=None, user_id=None, include_explanations=true, mmr_lambda=None, filter_metadata=None, created_after_ms=None, created_before_ms=None))]
     fn recall(
         &self,
         py: Python<'_>,
@@ -450,6 +450,8 @@ impl PyMemoryStore {
         include_explanations: bool,
         mmr_lambda: Option<f32>,
         filter_metadata: Option<&Bound<'_, PyDict>>,
+        created_after_ms: Option<i64>,
+        created_before_ms: Option<i64>,
     ) -> PyResult<Vec<(String, String, f32)>> {
         let scope = parse_scope(tenant_id, namespace, agent_id, user_id)?;
 
@@ -458,6 +460,8 @@ impl PyMemoryStore {
 
         let filters = vivy_memory::MemoryFilter {
             metadata_eq: filter_metadata.map(parse_py_dict_metadata).transpose()?,
+            created_after_ms,
+            created_before_ms,
             ..Default::default()
         };
 
@@ -488,7 +492,7 @@ impl PyMemoryStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (tenant_id, namespace, query_embedding, query_text=None, max_tokens=1500, limit=10, template=None, header=None, footer=None, agent_id=None, user_id=None, filter_metadata=None))]
+    #[pyo3(signature = (tenant_id, namespace, query_embedding, query_text=None, max_tokens=1500, limit=10, template=None, header=None, footer=None, agent_id=None, user_id=None, filter_metadata=None, created_after_ms=None, created_before_ms=None))]
     fn format_context(
         &self,
         py: Python<'_>,
@@ -504,6 +508,8 @@ impl PyMemoryStore {
         agent_id: Option<&str>,
         user_id: Option<&str>,
         filter_metadata: Option<&Bound<'_, PyDict>>,
+        created_after_ms: Option<i64>,
+        created_before_ms: Option<i64>,
     ) -> PyResult<String> {
         let scope = parse_scope(tenant_id, namespace, agent_id, user_id)?;
 
@@ -512,6 +518,8 @@ impl PyMemoryStore {
 
         let filters = vivy_memory::MemoryFilter {
             metadata_eq: filter_metadata.map(parse_py_dict_metadata).transpose()?,
+            created_after_ms,
+            created_before_ms,
             ..Default::default()
         };
 

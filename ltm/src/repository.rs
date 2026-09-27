@@ -1196,6 +1196,16 @@ impl Repository {
             }
         }
 
+        if let Some(after) = filter.created_after_ms {
+            query_sql.push_str(" AND m.created_at_ms >= ?");
+            params_vec.push(Box::new(after));
+        }
+
+        if let Some(before) = filter.created_before_ms {
+            query_sql.push_str(" AND m.created_at_ms <= ?");
+            params_vec.push(Box::new(before));
+        }
+
         query_sql.push_str(" ORDER BY rank LIMIT ?");
         params_vec.push(Box::new(limit as i64));
 

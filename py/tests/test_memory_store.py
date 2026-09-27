@@ -387,5 +387,67 @@ def test_memory_store_backup():
         assert recalled[0][0] == mem_id
 
 
+def test_memory_store_time_window_filtering():
+    """Verify created_after_ms and created_before_ms in Python MemoryStore.recall() and format_context()."""
+    import os
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+
+        id1 = store.remember(
+            tenant_id="acme",
+            namespace="temporal",
+            content="Old memory 1000ms ago",
+            embedding=[1.0, 0.0, 0.0]
+        )
+        id2 = store.remember(
+            tenant_id="acme",
+            namespace="temporal",
+            content="Recent memory 5000ms ago",
+            embedding=[1.0, 0.0, 0.0]
+        )
+
+        # Explicitly update created_at_ms in sqlite db
+        db_path = os.path.join(tmpdir, "memory.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE memories SET created_at_ms = 1000 WHERE id = ?", (id1,))
+        cursor.execute("UPDATE memories SET created_at_ms = 5000 WHERE id = ?", (id2,))
+        conn.commit()
+        conn.close()
+
+        # Recall with created_after_ms = 4000 (only id2)
+        res_after = store.recall(
+            tenant_id="acme",
+            namespace="temporal",
+            query_embedding=[1.0, 0.0, 0.0],
+            created_after_ms=4000
+        )
+        assert len(res_after) == 1
+        assert res_after[0][0] == id2
+
+        # Recall with created_before_ms = 2000 (only id1)
+        res_before = store.recall(
+            tenant_id="acme",
+            namespace="temporal",
+            query_embedding=[1.0, 0.0, 0.0],
+            created_before_ms=2000
+        )
+        assert len(res_before) == 1
+        assert res_before[0][0] == id1
+
+        # Format context with created_after_ms = 4000
+        fmt_ctx = store.format_context(
+            tenant_id="acme",
+            namespace="temporal",
+            query_embedding=[1.0, 0.0, 0.0],
+            created_after_ms=4000
+        )
+        assert "Recent memory 5000ms ago" in fmt_ctx
+        assert "Old memory 1000ms ago" not in fmt_ctx
+
+
+
 
 
