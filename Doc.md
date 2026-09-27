@@ -235,7 +235,7 @@ Vivy supports five semantic memory categories:
 
 #### 4. Hybrid Candidate Recall & Reranking (`recall`)
 
-Retrieve relevant memories using dense HNSW vector search combined with SQLite FTS5 lexical text search via Reciprocal Rank Fusion (RRF), explainable 4-factor scoring, and Maximal Marginal Relevance (MMR) deduplication.
+Retrieve relevant memories using dense HNSW vector search combined with SQLite FTS5 lexical text search via Reciprocal Rank Fusion (RRF), explainable 4-factor scoring, Maximal Marginal Relevance (MMR) deduplication, metadata filtering, and temporal range filtering.
 
 ```python
 results = store.recall(
@@ -244,10 +244,13 @@ results = store.recall(
     query_embedding=[0.012, -0.045, 0.089] + [0.0] * 1533,
     query_text="Python backend examples", # Triggers FTS5 full-text keyword matching
     limit=5,
-    agent_id="agent_assistant_v2",        # Optional filter
-    user_id="user_98234",              # Optional filter
-    include_explanations=True,        # Computes detailed scoring explanations
-    mmr_lambda=0.6                    # MMR coefficient (0.0 = max diversity, 1.0 = pure relevance)
+    agent_id="agent_assistant_v2",        # Optional scope filter
+    user_id="user_98234",                 # Optional scope filter
+    include_explanations=True,           # Computes detailed scoring explanations
+    mmr_lambda=0.6,                      # MMR coefficient (0.0 = max diversity, 1.0 = pure relevance)
+    filter_metadata={"project": "alpha"},# Optional key-value metadata filter dict
+    created_after_ms=1700000000000,      # Optional temporal lower bound (epoch ms)
+    created_before_ms=1750000000000      # Optional temporal upper bound (epoch ms)
 )
 
 for mem_id, content, score in results:
@@ -265,13 +268,74 @@ for mem_id, content, score in results:
 - `user_id` (`str`, optional): Optional user scope filter.
 - `include_explanations` (`bool`, optional): Include scoring breakdown notes. Default: `True`.
 - `mmr_lambda` (`float`, optional): Maximal Marginal Relevance trade-off parameter ($0.0 \le \lambda \le 1.0$). If `None`, standard score ranking is used.
+- `filter_metadata` (`dict`, optional): Dictionary of key-value equality conditions applied to memory metadata JSON.
+- `created_after_ms` (`int`, optional): Epoch timestamp in milliseconds. Memories created strictly before this timestamp are filtered out.
+- `created_before_ms` (`int`, optional): Epoch timestamp in milliseconds. Memories created strictly after this timestamp are filtered out.
 
 ##### Return Format:
 `List[Tuple[str, str, float]]`: List of tuples `(memory_id, content, score)`.
 
 ---
 
-#### 5. Soft-Deleting Memories (`forget`)
+#### 5. Time-Window Temporal Filtering (`created_after_ms` & `created_before_ms`)
+
+AI agents processing episodic memory often need recency window constraints (e.g. *"What preferences were created in the last 2 hours?"* or *"Recall user instructions recorded within a specific temporal window"*).
+
+Vivy enforces temporal range constraints at both the SQLite candidate retrieval layer (`WHERE created_at_ms >= ? AND created_at_ms <= ?`) and candidate evaluation:
+
+```python
+import time
+
+now_ms = int(time.time() * 1000)
+one_hour_ago_ms = now_ms - (3600 * 1000)
+
+recent_memories = store.recall(
+    tenant_id="acme_corp",
+    namespace="support_chat",
+    query_embedding=[0.1] * 1536,
+    created_after_ms=one_hour_ago_ms,
+    limit=5
+)
+```
+
+---
+
+#### 6. LLM Context Window Formatter (`format_context`)
+
+Formats recalled memories directly into a token-budgeted string suitable for LLM prompt context injection.
+
+```python
+formatted_context = store.format_context(
+    tenant_id="acme_corp",
+    namespace="support_chat",
+    query_embedding=[0.1] * 1536,
+    query_text="coding guidelines",
+    max_tokens=1500,
+    limit=10,
+    template="- [{kind}] {content} (score: {score:.2})",
+    header="### System Context:",
+    footer="=== End Context ===",
+    filter_metadata={"confidential": False},
+    created_after_ms=one_hour_ago_ms
+)
+
+print(formatted_context)
+```
+
+---
+
+#### 7. Atomic Zero-Downtime Store Backup (`backup`)
+
+Perform a live, crash-consistent backup of SQLite (via `VACUUM INTO`) and vector engine index segments to a target backup directory while the store remains actively online:
+
+```python
+store.backup(target_path="./backups/snapshot_2026_09_27")
+print("Backup created successfully.")
+```
+
+---
+
+#### 8. Soft-Deleting Memories (`forget`)
 
 Soft-delete a memory record by marking its status as `deleted`. It is instantly hidden from all subsequent `recall` and `get` operations.
 
@@ -790,14 +854,17 @@ Vivy enforces strict data privacy:
 
 ### Running the Workspace Test Suite
 
-Execute the workspace test suite:
+Execute the workspace test suites:
 
 ```bash
-# Run all workspace unit and integration tests (48 tests)
+# Run Rust workspace unit, integration, and security tests (60 tests)
 cargo test --workspace
 
 # Run zero-warning Clippy check
 cargo clippy --workspace --all-targets -- -D warnings
+
+# Run Python PyO3 integration test suite (44 tests)
+pytest
 ```
 
 ---

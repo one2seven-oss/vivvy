@@ -48,10 +48,14 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 ## Key Capabilities
 
 * **Durable Agent Memory (`vivy-memory`)**: SQLite WAL serves as canonical truth for memory records, revisions, and operation journal. Vector index acts as a derived, auto-rebuildable accelerator.
-* **Strict Multi-Tenant Isolation**: Enforces tenant, namespace, agent, and user boundaries at API entry and SQL level. Zero cross-tenant data leakage.
+* **Time-Window Temporal Filtering**: Filter candidate memories by temporal lower and upper bounds (`created_after_ms` & `created_before_ms`) at SQLite query entry and candidate evaluation.
+* **Strict Multi-Tenant Isolation**: Enforces tenant, namespace, agent, and user boundaries at API entry and SQL query level. Zero cross-tenant data leakage.
 * **Hybrid Candidate Recall**: Combines SQLite FTS5 lexical keyword matching with dense HNSW vector search using Reciprocal Rank Fusion (RRF).
+* **Token-Budgeted Context Formatter (`format_context`)**: Formats recalled agent memories into custom templated prompt blocks bounded by exact LLM token budgets.
+* **Live Zero-Downtime Store Backups (`backup`)**: Creates crash-consistent online backup snapshots of SQLite (via `VACUUM INTO`) and vector engine segments without interrupting store operation.
+* **Zero-Copy NumPy & PyTorch Ingestion**: Direct PyO3 C-contiguous buffer protocol ingestion for `np.ndarray` float32 arrays with GIL release during search & inserts.
 * **Transparent Reranking & MMR**: 4-component weighted scoring (Similarity, Importance, Recency, Reinforcement) plus optional Maximal Marginal Relevance (MMR) deduplication.
-* **Security & Operations Primitives**: Encrypted storage interfaces (`KeyProvider`), telemetry redaction (`TelemetryRecord`), non-blocking health checks (`StoreHealth`), and resumable vacuuming (`vacuum_tombstones`).
+* **Security & Operations Primitives**: Encrypted storage interfaces (`KeyProvider`), telemetry redaction (`TelemetryRecord`), non-blocking health checks (`StoreHealth`), and resumable tombstone vacuuming (`vacuum_tombstones`).
 * **High Performance Vector Search (`vivy-core`)**: HNSW vector graph with non-blocking inserts and Roaring bitmap metadata filtering.
 
 ---
@@ -68,8 +72,9 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 | vivy-memory (LTM Runtime Layer)                                 |
 | - MemoryScope (tenant_id, namespace, agent_id, user_id)         |
 | - Operation Journal (idempotency, 2-phase state machine)        |
+| - Temporal Filtering (created_after_ms, created_before_ms)      |
 | - Hybrid Reciprocal Rank Fusion (SQLite FTS5 + HNSW Vector RRF) |
-| - Explainable Reranker & MMR Diversity Pass                     |
+| - Explainable Reranker, Context Formatter & MMR Diversity       |
 +-----------------------------------------------------------------+
            |                                           |
            v                                           v
@@ -83,64 +88,38 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 
 ---
 
-## Getting Started (Python)
+## Getting Started
 
-### Agent Long-Term Memory (`MemoryStore`)
+Refer to [**`Doc.md`**](Doc.md) for the complete, production-grade integration guide, full API reference, and runnable agent workflow patterns.
+
+### Quick Example
 
 ```python
 import vivy
 
-# Open or create a local durable memory store
-store = vivy.MemoryStore.open(
-    path="./agent_memory",
-    dimensions=1536,
-    embedding_model="text-embedding-3-small"
-)
+# Open durable long-term memory store
+store = vivy.MemoryStore.open(path="./agent_data", dimensions=3, embedding_model="test-model")
 
-# Remember an observation with an operation ID for idempotency
+# Store observation into durable memory
 mem_id = store.remember(
     tenant_id="acme",
     namespace="support",
-    content="User x prefers concise technical answers with benchmarks.",
-    embedding=[0.1] * 1536,
-    kind="preference",
-    importance=0.9,
-    operation_id="op-pref-101"
+    content="User prefers concise technical responses.",
+    embedding=[0.1, 0.2, 0.3],
+    kind="preference"
 )
 
-# Hybrid Recall (FTS5 text search + Vector embedding RRF fusion)
+# Recall relevant memories with hybrid text + vector search
 results = store.recall(
     tenant_id="acme",
     namespace="support",
-    query_embedding=[0.1] * 1536,
-    query_text="x benchmarks",
-    limit=5,
-    include_explanations=True,
-    mmr_lambda=0.5  # Apply MMR diversity
+    query_embedding=[0.1, 0.2, 0.3],
+    query_text="concise technical",
+    limit=5
 )
 
 for memory_id, content, score in results:
-    print(f"[{score:.3f}] {content}")
-
-# Soft-delete / tombstone a memory
-store.forget(tenant_id="acme", namespace="support", id=mem_id)
-
-# Physical maintenance & health check
-health = store.health()
-print(f"Store active: {health['total_active_records']}, tombstones: {health['total_tombstoned_records']}")
-purged = store.vacuum_tombstones(batch_size=100)
-```
-
-### Low-Level Vector Search (`Index`)
-
-```python
-import vivy
-
-idx = vivy.Index(dims=768, metric="cosine")
-idx.insert([0.1] * 768, metadata={"color": "red"})
-idx.insert([0.9] * 768, metadata={"color": "blue"})
-
-results = idx.search([0.5] * 768, k=5, filter={"color": "red"})
+    print(f"[{score:.2f}] {content}")
 ```
 
 ---
@@ -148,14 +127,17 @@ results = idx.search([0.5] * 768, k=5, filter={"color": "red"})
 ## Build & Verification
 
 ```sh
-# Run workspace test suite (48 integration/unit tests)
+# Run Rust workspace test suite (60 unit, integration & security tests)
 cargo test --workspace
 
-# Run zero-warning clippy check
+# Run zero-warning Clippy check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Build release binaries
-cargo build --release
+# Build & install Python extension module
+maturin develop --manifest-path py/Cargo.toml
+
+# Run Python PyO3 integration test suite (44 tests)
+pytest py/
 
 # Run performance benchmark suite
 cargo run --release --package bench
