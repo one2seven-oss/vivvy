@@ -19,10 +19,15 @@ This document serves as the authoritative, production-grade guide for integratin
      - [2. Storing Observations & Knowledge (`remember`)](#2-storing-observations--knowledge-remember)
      - [3. Memory Kinds & Semantic Categorization](#3-memory-kinds--semantic-categorization)
      - [4. Hybrid Candidate Recall & Reranking (`recall`)](#4-hybrid-candidate-recall--reranking-recall)
-     - [5. Soft-Deleting Memories (`forget`)](#5-soft-deleting-memories-forget)
-     - [6. Store Health Diagnostics (`health`)](#6-store-health-diagnostics-health)
-     - [7. Resumable Physical Vacuuming (`vacuum_tombstones`)](#7-resumable-physical-vacuuming-vacuum_tombstones)
-     - [8. Index Accelerator Rebuilding (`rebuild_index`)](#8-index-accelerator-rebuilding-rebuild_index)
+     - [5. Time-Window Temporal Filtering](#5-time-window-temporal-filtering-created_after_ms--created_before_ms)
+     - [6. LLM Context Window Formatter (`format_context`)](#6-llm-context-window-formatter-format_context)
+     - [7. Atomic Zero-Downtime Backup (`backup`)](#7-atomic-zero-downtime-store-backup-backup)
+     - [8. Soft-Deleting Memories (`forget`)](#8-soft-deleting-memories-forget)
+     - [9. Store Health Diagnostics (`health`)](#9-store-health-diagnostics-health)
+     - [10. Resumable Physical Vacuuming (`vacuum_tombstones`)](#10-resumable-physical-vacuuming-vacuum_tombstones)
+     - [11. Index Accelerator Rebuilding (`rebuild_index`)](#11-index-accelerator-rebuilding-rebuild_index)
+     - [12. Optimistic Concurrent Memory Update (`update`)](#12-optimistic-concurrent-memory-update-update)
+     - [13. Bulk Soft-Delete (`forget_batch`)](#13-bulk-soft-delete-forget_batch)
    - [Low-Level Vector Search Index (`vivy.Index`)](#low-level-vector-search-index-vivyindex)
      - [1. Index Construction & Metric Options](#1-index-construction--metric-options)
      - [2. Vector Ingestion (`insert`, `insert_batch`)](#2-vector-ingestion-insert-insert_batch)
@@ -315,7 +320,7 @@ formatted_context = store.format_context(
     template="- [{kind}] {content} (score: {score:.2})",
     header="### System Context:",
     footer="=== End Context ===",
-    filter_metadata={"confidential": False},
+    filter_metadata={"confidential": "false"},  # Values must be strings (str), not bool/int
     created_after_ms=one_hour_ago_ms
 )
 
@@ -343,14 +348,17 @@ Soft-delete a memory record by marking its status as `deleted`. It is instantly 
 store.forget(
     tenant_id="acme_corp",
     namespace="support_chat",
-    id=memory_id
+    id=memory_id            # positional-only; keyword form also accepted via pyo3 signature
 )
 print(f"Memory {memory_id} soft-deleted.")
 ```
 
+> [!NOTE]
+> `forget()` accepts `tenant_id`, `namespace`, and `id` only. It does **not** accept `agent_id` or `user_id` parameters — scope is restricted to tenant + namespace level. Use `forget_batch(tenant_id, namespace, ids=[...])` to remove multiple records atomically.
+
 ---
 
-#### 6. Store Health Diagnostics (`health`)
+#### 9. Store Health Diagnostics (`health`)
 
 Inspect operational metrics and health status of the memory store without exposing raw memory text or vector embeddings.
 
@@ -369,7 +377,7 @@ print(f"SQLite WAL Size:         {health['wal_size_bytes']} bytes")
 
 ---
 
-#### 7. Resumable Physical Vacuuming (`vacuum_tombstones`)
+#### 10. Resumable Physical Vacuuming (`vacuum_tombstones`)
 
 Perform incremental, physical purging of soft-deleted (`tombstoned`) and expired memory records from SQLite, automatically rebuilding the vector index accelerator when purging completes.
 
@@ -381,13 +389,64 @@ print(f"Scrubbed and purged {purged_count} physical records from storage.")
 
 ---
 
-#### 8. Index Accelerator Rebuilding (`rebuild_index`)
+#### 11. Index Accelerator Rebuilding (`rebuild_index`)
 
 Force a complete in-memory rebuild of the vector index accelerator directly from active canonical records in SQLite.
 
 ```python
 store.rebuild_index()
 print("Vector index accelerator rebuilt successfully.")
+```
+
+---
+
+#### 12. Optimistic Concurrent Memory Update (`update`)
+
+Update an existing memory record's content, embedding, kind, importance, or expiry. Uses **optimistic concurrency control**: you must supply the current `revision` (obtained from `get()`). If the record was modified concurrently, the call raises an error instead of silently overwriting.
+
+```python
+# 1. Read current record to get its revision
+record = store.get(
+    tenant_id="acme_corp",
+    namespace="support_chat",
+    id=memory_id
+)
+
+# 2. Apply update with optimistic lock
+store.update(
+    tenant_id="acme_corp",
+    namespace="support_chat",
+    id=memory_id,
+    expected_revision=record["revision"],  # Required — optimistic concurrency key
+    content="User now prefers Rust for backend examples.",
+    embedding=new_embedding,               # Optional: new vector (must match store dimensions)
+    importance=0.95,                       # Optional: new importance weight
+)
+```
+
+##### Parameters:
+- `tenant_id`, `namespace`, `id` (`str`): Identify the target record.
+- `expected_revision` (`int`): Current revision. Update is rejected if stale (optimistic lock).
+- `content` (`str`, optional): New text content.
+- `embedding` (`List[float]`, optional): New vector.
+- `kind` (`str`, optional): New semantic category string.
+- `importance` (`float`, optional): New importance weight.
+- `agent_id` / `user_id` (`str`, optional): Scope qualifiers.
+- `operation_id` (`str`, optional): Idempotency key.
+- `expires_at_ms` (`int`, optional): New expiry epoch in milliseconds.
+
+---
+
+#### 13. Bulk Soft-Delete (`forget_batch`)
+
+Remove multiple memory records atomically in a single call — more efficient than calling `forget()` in a loop.
+
+```python
+store.forget_batch(
+    tenant_id="acme_corp",
+    namespace="support_chat",
+    ids=["mem_id_1", "mem_id_2", "mem_id_3"]
+)
 ```
 
 ---
@@ -881,18 +940,29 @@ cargo run --release --package bench
 
 ### Performance Matrix Reference
 
-Measured on a standard single-machine workspace environment:
+Baseline values from `sim/` synthetic harness (small N, reproducible):
 
 | Benchmark Metric | Value | Description |
 | :--- | :--- | :--- |
 | **Cold Start Latency** | `~51 ms` | Fresh DB creation, SQLite WAL setup, vector engine boot |
 | **Warm Start Latency** | `~51 ms` | Re-open database & replay operation journal (500 items) |
-| **Write Throughput** | `5,216 writes/sec` | Dual-write commit (SQLite WAL + HNSW graph insert) |
+| **Write Throughput** | `5,216 writes/sec` | Dual-write commit (SQLite WAL + HNSW graph insert) at small N |
 | **Hybrid Recall Throughput** | `305.1 QPS` | Dense Vector KNN + SQLite FTS5 + RRF Fusion + MMR Rerank |
 | **Hybrid Recall Latency** | `3.27 ms` | End-to-end mean query search & rerank latency |
 | **Vector Engine (64-dim)** | `6,012 QPS` | Pure HNSW vector query throughput (`0.16 ms` mean latency) |
 | **Vector Engine (512-dim)**| `1,433 QPS` | Pure HNSW vector query throughput (`0.69 ms` mean latency) |
 | **Vacuum Scrubbing** | `74 ms` | Scrubbing batch of 100 tombstones + index rebuild |
+
+Real-world measured results from `benchmarks/run_realtime_benchmarks.py` (Intel i5-11400H, 6-core, 15 GB RAM):
+
+| Benchmark | N | p50 | p95 | QPS | Recall@10 | Context Reduction |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LoCoMo accuracy (768-dim) | 300 | 4.55 ms | 4.98 ms | 216 | 46.0% | 89.6% |
+| LongMemEval accuracy (768-dim) | 60 | 1.64 ms | 2.22 ms | 571 | 73.3% | 19.0% |
+| Hybrid Recall (10K, 768-dim) | 10,000 | 3.27 ms | 4.05 ms | 297 | 45.0% | 99.7% |
+| Pure HNSW ANN (100K, 768-dim) | 100,000 | 2.27 ms | 2.52 ms | 441 | 82.0% | 100.0% |
+
+> See `benchmarks/BENCHMARK_REPORT.md` and `benchmarks/vivy_benchmark_results.json` for full details and hardware profile.
 
 ---
 
