@@ -7,7 +7,7 @@ name = "vivy-vdb"
 version = "0.1.0"
 description = "Vector search that lives on one machine"
 requires-python = ">=3.8"
-license = "BSL-1.1"
+license = "BUSL-1.1"
 
 [project.urls]
 Homepage = "https://github.com/one2seven-oss/vivy"
