@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "BSL-1.1"
 description = "Core vector index engine for Vivy — single-machine, memory-honest vector search"
+repository = "https://github.com/one2seven-oss/vivy"
+homepage = "https://github.com/one2seven-oss/vivy"
+readme = "README.md"
 
 [features]
 default = []

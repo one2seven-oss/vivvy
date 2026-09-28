@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "BSL-1.1"
 description = "Local, durable, namespace-isolated long-term memory for AI agents"
+repository = "https://github.com/one2seven-oss/vivy"
+homepage = "https://github.com/one2seven-oss/vivy"
+readme = "README.md"
 
 [dependencies]
 vivy-core = { version = "0.1.0", path = "../vec" }

@@ -9,6 +9,10 @@ description = "Vector search that lives on one machine"
 requires-python = ">=3.8"
 license = "BSL-1.1"
 
+[project.urls]
+Homepage = "https://github.com/one2seven-oss/vivy"
+Repository = "https://github.com/one2seven-oss/vivy"
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "vivy"

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "BSL-1.1"
 description = "Python bindings for Vivy vector search engine"
+publish = false
 
 [dependencies]
 vivy-core = { version = "0.1.0", path = "../vec" }
