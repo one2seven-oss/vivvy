@@ -1,6 +1,6 @@
 [package]
 name = "vivvy-core"
-version = "0.1.0-alpha"
+version = "0.1.0"
 edition = "2021"
 license = "BUSL-1.1"
 description = "Core vector index engine for Vivvy — single-machine, memory-honest vector search"

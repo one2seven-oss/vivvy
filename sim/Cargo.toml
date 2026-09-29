@@ -1,13 +1,13 @@
 [package]
 name = "bench"
-version = "0.1.0-alpha"
+version = "0.1.0"
 edition = "2021"
 license = "BSL-1.1"
 description = "Benchmarking harness for Vivvy"
 publish = false
 
 [dependencies]
-vivvy-core = { version = "0.1.0-alpha", path = "../vec" }
-vivvy-memory = { version = "0.1.0-alpha", path = "../ltm" }
+vivvy-core = { version = "0.1.0", path = "../vec" }
+vivvy-memory = { version = "0.1.0", path = "../ltm" }
 tempfile = "3"
 rand = "0.9"

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "vivvy-vdb"
-version = "0.1.0a0"
+version = "0.1.0"
 description = "Vector search that lives on one machine"
 readme = "README.md"
 requires-python = ">=3.8"
