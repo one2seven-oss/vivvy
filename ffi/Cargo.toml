@@ -1,0 +1,27 @@
+[package]
+name = "vivvy-ffi"
+version = "0.1.0-alpha"
+edition = "2021"
+license = "BUSL-1.1"
+description = "C-compatible FFI layer for Vivvy, consumed by the Go bindings and other non-Rust hosts"
+repository = "https://github.com/one2seven-oss/vivvy"
+homepage = "https://github.com/one2seven-oss/vivvy"
+publish = false
+
+[lib]
+name = "vivvy_ffi"
+# "rlib" (cargo's default, otherwise dropped by naming the other two) is
+# needed so ffi/tests/*.rs — and any future Rust consumer — can link against
+# this crate normally; "staticlib"/"cdylib" alone only produce artifacts
+# consumable from C/Go, not from other Rust crates.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+vivvy-core = { version = "0.1.0-alpha", path = "../vec" }
+vivvy-memory = { version = "0.1.0-alpha", path = "../ltm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

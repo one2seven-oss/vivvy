@@ -7,6 +7,8 @@ description = "Core vector index engine for Vivvy — single-machine, memory-hon
 repository = "https://github.com/one2seven-oss/vivvy"
 homepage = "https://github.com/one2seven-oss/vivvy"
 readme = "README.md"
+keywords = ["vector-search", "hnsw", "embeddings", "ann", "similarity"]
+categories = ["algorithms", "data-structures"]
 
 [features]
 default = []

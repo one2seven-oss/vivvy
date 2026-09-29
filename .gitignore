@@ -1,13 +1,55 @@
+# Rust / Cargo
 /target/
-*.pyc
+**/*.rs.bk
+Cargo.lock.back
+*.lock
+# Python & PyO3
 __pycache__/
+*.py[cod]
+*$py.class
 *.egg-info/
-doc/
+dist/
+build/
 *.so
+*.pyd
 .venv/
 venv/
-.DS_Store
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Go & Testing
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# C-FFI / Static & Dynamic Libraries
+/go/lib/*.a
+/go/lib/*.lib
+/go/lib/*.so
+/go/lib/*.dylib
+/go/lib/*.dll
 *.o
-guidedoc/
-Cargo.lock
-*.lock
+*.dylib
+*.dll
+*.pdb
+*.exp
+
+# Databases & Runtime State (SQLite WAL, Segments)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.vivvy
+/bench_data/
+
+# OS & Editor Artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

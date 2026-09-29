@@ -7,6 +7,8 @@ description = "Local, durable, namespace-isolated long-term memory for AI agents
 repository = "https://github.com/one2seven-oss/vivvy"
 homepage = "https://github.com/one2seven-oss/vivvy"
 readme = "README.md"
+keywords = ["agent-memory", "llm", "rag", "vector-search", "sqlite"]
+categories = ["database-implementations", "algorithms"]
 
 [dependencies]
 vivvy-core = { version = "0.1.0-alpha", path = "../vec" }

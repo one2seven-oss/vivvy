@@ -954,6 +954,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vivvy-ffi"
+version = "0.1.0-alpha"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vivvy-core",
+ "vivvy-memory",
+]
+
+[[package]]
 name = "vivvy-memory"
 version = "0.1.0-alpha"
 dependencies = [

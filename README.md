@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/vivvy.png" alt="Vivvy" width="200" />
+  <img src="assets/vivvy.jpeg" alt="Vivvy" width="200" />
   <br><br>
 
   [![Crates.io](https://img.shields.io/crates/v/vivvy-core?label=vivvy-core)](https://crates.io/crates/vivvy-core)
@@ -10,10 +10,11 @@
   [![WAL](https://img.shields.io/badge/crash--safe-WAL-blue)](#)
   [![FTS5](https://img.shields.io/badge/hybrid-FTS5%20%2B%20Vector%20RRF-blue)](#)
   [![PyO3](https://img.shields.io/badge/bindings-PyO3-yellow)](#)
+  [![Go](https://img.shields.io/badge/bindings-cgo-00ADD8)](go)
   [![Release Candidate](https://img.shields.io/badge/status-v0.1.0--RC1%20Ready-brightgreen)](#)
 </div>
 
-A local, durable long-term memory (LTM) runtime and single-machine vector engine for AI agents. No cloud databases, no network latency, no external daemons. Rust core with PyO3 Python bindings.
+A local, durable long-term memory (LTM) runtime and single-machine vector engine for AI agents. No cloud databases, no network latency, no external daemons. Rust core with PyO3 Python bindings and Go bindings via a pre-compiled static C-FFI library.
 
 ---
 
@@ -24,6 +25,8 @@ A local, durable long-term memory (LTM) runtime and single-machine vector engine
 | **`vivvy-memory`** | [`ltm/`](ltm) | Durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable scoring & MMR diversity. |
 | **`vivvy-core`** | [`vec/`](vec) | In-process vector engine: HNSW graph search, Roaring bitmap filters, 64-bit ID safety, atomic segment manifests & WAL. |
 | **`vivvy-py`** | [`py/`](py) | PyO3 Python bindings exposing `vivvy.MemoryStore` and low-level `vivvy.Index` with GIL release. |
+| **`vivvy-ffi`** | [`ffi/`](ffi) | `extern "C"` layer (staticlib + cdylib) exposing `MemoryStore` as a panic-safe, JSON-in/JSON-out C ABI — see [`go/include/vivvy.h`](go/include/vivvy.h). |
+| **`vivvy-go`** | [`go/`](go) | Go bindings over `vivvy-ffi` via cgo and a pre-compiled static library — `go get`, no Rust toolchain or daemon required. |
 | **`bench`** | [`sim/`](sim) | Synthetic data benchmark suite for QPS, latency, and ground-truth recall verification. |
 
 ---
@@ -147,7 +150,7 @@ cargo run --release --package bench
 
 ## Licensing & Commercial Terms
 
-**Vivvy** components (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
+**Vivvy** components (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `vivvy-ffi`, `vivvy-go`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
 
 ### Permitted Uses (BSL 1.1 Additional Use Grant)
 - **Non-Production & Evaluation**: Free use for development, testing, research, and evaluation.

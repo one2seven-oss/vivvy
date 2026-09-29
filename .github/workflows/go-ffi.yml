@@ -1,0 +1,174 @@
+name: Go FFI
+
+# Two jobs:
+#  - `test`: on every push/PR touching the FFI surface, build the vivvy-ffi
+#    staticlib natively on each of the three OSes this module supports and
+#    run the full Go test suite against it (fast feedback, no cross-compiling).
+#  - `build-release-libs` / `publish-release-libs`: on a `v*` tag or a
+#    published GitHub Release, cross-compile all five platform/arch
+#    staticlibs go/cgo.go expects and attach them to the release, so
+#    consumers of the Go module can fetch pre-built libraries without a Rust
+#    toolchain.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "ffi/**"
+      - "vec/**"
+      - "ltm/**"
+      - "go/**"
+      - ".github/workflows/go-ffi.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ffi/**"
+      - "vec/**"
+      - "ltm/**"
+      - "go/**"
+      - ".github/workflows/go-ffi.yml"
+  release:
+    types: [published]
+
+env:
+  CGO_ENABLED: 1
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            lib_name: libvivvy_linux_amd64.a
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            lib_name: libvivvy_darwin_arm64.a
+          - os: windows-latest
+            # cgo on Windows drives a GCC-compatible compiler (the
+            # pre-installed MinGW-w64 toolchain), not MSVC, so the GNU ABI
+            # target is what actually links against go/cgo.go's LDFLAGS.
+            rust_target: x86_64-pc-windows-gnu
+            lib_name: libvivvy_windows_amd64.a
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.rust_target }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: Build vivvy-ffi staticlib
+        run: cargo build -p vivvy-ffi --release --target ${{ matrix.rust_target }}
+
+      - name: Stage staticlib into go/lib
+        shell: bash
+        run: cp "target/${{ matrix.rust_target }}/release/libvivvy_ffi.a" "go/lib/${{ matrix.lib_name }}"
+
+      - name: gofmt check
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l go)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: go
+        run: go vet ./...
+
+      - name: go test
+        working-directory: go
+        run: go test -v ./...
+
+      - name: go test -race
+        working-directory: go
+        run: go test -v -race ./...
+
+  build-release-libs:
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            lib_name: libvivvy_linux_amd64.a
+          - os: ubuntu-latest
+            rust_target: aarch64-unknown-linux-gnu
+            lib_name: libvivvy_linux_arm64.a
+            cross_apt_pkg: gcc-aarch64-linux-gnu
+            cross_linker: aarch64-linux-gnu-gcc
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
+            lib_name: libvivvy_darwin_amd64.a
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            lib_name: libvivvy_darwin_arm64.a
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-gnu
+            lib_name: libvivvy_windows_amd64.a
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.rust_target }}
+
+      - name: Install aarch64 cross linker
+        if: matrix.cross_apt_pkg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_apt_pkg }}
+
+      - name: Point cargo at the cross linker
+        if: matrix.cross_linker
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.cross_linker }}" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=${{ matrix.cross_linker }}" >> "$GITHUB_ENV"
+
+      - name: Build vivvy-ffi staticlib
+        run: cargo build -p vivvy-ffi --release --target ${{ matrix.rust_target }}
+
+      - name: Stage
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.rust_target }}/release/libvivvy_ffi.a" "dist/${{ matrix.lib_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.lib_name }}
+          path: dist/${{ matrix.lib_name }}
+          if-no-files-found: error
+
+  # Attaches the cross-compiled libs to the GitHub Release as downloadable
+  # assets. Only runs for an actual published release (not a bare tag push),
+  # since that's what `gh release upload` needs to target.
+  publish-release-libs:
+    needs: build-release-libs
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload static libs to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.a --clobber

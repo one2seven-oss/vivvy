@@ -6,12 +6,23 @@ build-backend = "maturin"
 name = "vivvy-vdb"
 version = "0.1.0a0"
 description = "Vector search that lives on one machine"
+readme = "README.md"
 requires-python = ">=3.8"
 license = "BUSL-1.1"
+keywords = ["vector-search", "embeddings", "llm", "rag", "agent-memory", "ann", "hnsw"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.urls]
 Homepage = "https://github.com/one2seven-oss/vivvy"
 Repository = "https://github.com/one2seven-oss/vivvy"
+Documentation = "https://github.com/one2seven-oss/vivvy/blob/main/Doc.md"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

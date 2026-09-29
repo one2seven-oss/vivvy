@@ -55,7 +55,12 @@ This document serves as the authoritative, production-grade guide for integratin
    - [Running the Workspace Test Suite](#running-the-workspace-test-suite)
    - [Synthetic Benchmarks (`sim`)](#synthetic-benchmarks-sim)
    - [Performance Matrix Reference](#performance-matrix-reference)
-8. [Licensing & Commercial Terms (BSL-1.1)](#8-licensing--commercial-terms-bsl-11)
+8. [Contributor Code Style & Engineering Guide](#8-contributor-code-style--engineering-guide)
+   - [General Principles (All Languages)](#81-general-principles-all-languages)
+   - [Rust Guide (`vec/`, `ltm/`, `ffi/`, `sim/`)](#82-rust-guide-vec-ltm-ffi-sim)
+   - [Python Guide (`py/`)](#83-python-guide-py)
+   - [Go Guide (`go/`)](#84-go-guide-go)
+9. [Licensing & Commercial Terms (BSL-1.1)](#9-licensing--commercial-terms-bsl-11)
    - [Business Source License 1.1 Summary](#business-source-license-11-summary)
    - [Additional Use Grant Parameters](#additional-use-grant-parameters)
 
@@ -966,9 +971,156 @@ Real-world measured results from `benchmarks/run_realtime_benchmarks.py` (Intel 
 
 ---
 
-## 8. Licensing & Commercial Terms (BSL-1.1)
+## 8. Contributor Code Style & Engineering Guide
 
-Vivvy workspace packages (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)**. See [`LICENSE`](LICENSE) for the full license text.
+This section codifies how code is actually written in this repository — the conventions its CI and its reviewers enforce, not aspirational advice. It starts with principles that hold across every language in the workspace, then goes language-by-language into Rust (`vec/`, `ltm/`, `ffi/`, `sim/`), Python (`py/`), and Go (`go/`). If a rule below and the code disagree, the code is the bug — file it.
+
+### 8.1 General Principles (All Languages)
+
+**1. Validate at the boundary, trust the interior.**
+
+Every layer that receives data from outside the process — PyO3 arguments, FFI `extern "C"` arguments, cgo-marshaled Go values, JSON bodies — validates it exhaustively before constructing a domain type. Once a `MemoryScope`, `RememberRequest`, or `RecallRequest` exists, every function downstream (`Repository`, `JournalCoordinator`, `VivvyIndex`) trusts it was already validated and does not re-check it. Concretely: `MemoryScope::new` rejects empty `tenant_id`/`namespace` once, at construction; nothing that later receives a `&MemoryScope` re-validates it. Don't add a redundant check three layers down "to be safe" — it hides where the real contract lives.
+
+**2. Errors are typed and carry a stable, programmatically-branchable code — never stringly-typed.**
+
+`vivvy-memory::ErrorCode` is the single source of truth for *what kind* of failure occurred (`DimensionMismatch`, `RevisionConflict`, `NotFound`, ...). It propagates outward with the numeric identity preserved at every layer that can usefully branch on it:
+
+| Layer | How the code survives |
+| :--- | :--- |
+| Rust (`ltm`, `vec`) | `MemoryError::code() -> ErrorCode` / `VivvyError` variants |
+| C FFI (`ffi`) | `FfiError::code() -> i32`, a 1:1 mirror of `ErrorCode` (see `ffi/src/error.rs`) documented in `go/include/vivvy.h` |
+| Go (`go`) | `ErrCode*` constants in `vivvy.go`, kept in exact sync with `vivvy.h` |
+| Python (`py`) | Currently collapsed to `PyValueError(e.to_string())` — a caller can `str()` the message but cannot branch on a code. This is a known asymmetry with the FFI/Go path, not a design goal; a future change should consider a typed exception hierarchy instead of widening this gap further. |
+
+A caller should never need to substring-match an error message to decide what happened. If you add a new failure mode, add an `ErrorCode` variant first and thread it through every layer that already has a code-mirroring mechanism (FFI + Go); don't just format a string and call it done.
+
+**3. No silent failures.**
+
+Every `Result`/`PyResult`/Go `error` that can be non-trivial is either propagated with `?` (Rust), re-raised (Python), or checked and returned (Go) — never discarded with `let _ =`, a bare `except: pass`, or an ignored `_, err := ...`. The one sanctioned exception is a best-effort `Drop`/finalizer path where there is no caller left to hand an error to (e.g. `Store.finalize()` in Go, or `vivvy_store_close`'s panic-swallowing in Rust) — and even there, the FFI layer still records the panic message in thread-local storage so `vivvy_last_error_message()` can surface it.
+
+**4. A binding layer contains no business logic.**
+
+`py/src/lib.rs` and `go/vivvy.go` exist to translate a host language's values into a `vivvy-memory` request struct (or JSON DTO) and immediately delegate. Scoring, filtering, recall fusion, journal coordination, crash recovery — all of it lives in `vec/` and `ltm/` exactly once. If you find yourself computing something in a binding layer that isn't "shape this argument for the call below" or "shape this result for the caller," it almost certainly belongs in `vivvy-memory` or `vivvy-core` instead, so every binding gets it for free.
+
+**5. Comment the why, not the what.**
+
+Doc comments earn their place by recording a decision that isn't recoverable by reading the code — a constraint, a workaround, a tradeoff. Compare the module-level doc on `py/src/lib.rs` ("`allow_threads()` releases the GIL on every insert/search so Python threads can do data loading while Rust handles vector search") to a comment that would just restate the function signature; only the former is worth writing. The `Doc.md` you're reading now and the segment/manifest binary-format tables in [§5](#5-storage-schemas-binary-formats--data-models) exist for the same reason: on-disk formats and cross-language contracts aren't recoverable from a single file's source, so they get written down.
+
+**6. Formatting and linting are automated and non-negotiable.**
+
+Nobody hand-approximates `rustfmt`/`gofmt` output or eyeballs whether a line "looks clean" — the tool runs, and its output is the answer. See [§8.2](#82-rust-guide-vec-ltm-ffi-sim)–[§8.4](#84-go-guide-go) for the exact commands; all of them are wired into CI (`.github/workflows/ci.yml`, `.github/workflows/go-ffi.yml`) as hard gates, not suggestions.
+
+**7. Every new code path ships with a test — including failure and concurrency paths, not just the happy one.**
+
+A `Result::Err` branch, a filter that excludes records, a revision-conflict rejection, a concurrent-access pattern — each of these gets its own test rather than riding along implicitly inside a happy-path test. `ltm/tests/failure_tests.rs`, `ffi/tests/ffi_integration.rs`'s `dimension_mismatch_reports_the_documented_positive_code`, and `go/vivvy_test.go`'s `TestConcurrentInsertAndRecall`/`TestConcurrentCloseIsSafe` are the pattern to follow.
+
+**8. Dependencies are minimal, and every non-obvious one is justified in place.**
+
+A new `Cargo.toml`/`pyproject.toml`/`go.mod` dependency should be load-bearing, not speculative. When a dependency's presence isn't self-explanatory, say why in a comment right next to it — see `ffi/Cargo.toml`'s note on `vivvy-core` (declared but not yet directly used, kept for a future low-level `Index` FFI) as the pattern: a reviewer should never have to ask "why is this here?".
+
+---
+
+### 8.2 Rust Guide (`vec/`, `ltm/`, `ffi/`, `sim/`)
+
+**Crate boundaries.** Each crate owns exactly one bounded responsibility: `vivvy-core` (`vec/`) is the low-level, storage-and-concurrency-aware vector engine; `vivvy-memory` (`ltm/`) is the durable, multi-tenant memory runtime built on top of it; `vivvy-ffi` (`ffi/`) is a translation-only C ABI over `vivvy-memory`; `bench` (`sim/`) is a synthetic benchmark harness. New functionality goes into the crate that owns the responsibility — a new scoring heuristic belongs in `ltm`, not in `ffi` or a binding.
+
+**Error handling.**
+- Every public error type is a `thiserror`-derived enum with a human-readable `#[error("...")]` message *and* a stable code (`ErrorCode` in `ltm`; the FFI's own `i32` codes in `ffi`) — see §8.1 rule 2.
+- Library code (`vec/`, `ltm/`) never panics on invalid *external* input — bad dimensions, an empty scope, a malformed filter all return `Result::Err`. A panic is reserved for a true internal invariant violation (a bug in this codebase), never a code path reachable from untrusted caller input.
+- Prefer `?` propagation over manual `match`; only hand-match an error when you need to translate it into a different error type (see every `FfiError::from` impl in `ffi/src/error.rs`) or attach additional context.
+
+**Unsafe code — mandatory in `ffi/`, exceptional everywhere else.**
+- Every `unsafe` block carries a `// SAFETY:` comment immediately above it, stating *why* the operation is sound at this exact call site (which invariant discharges which precondition). This is not optional stylistic polish — see `ffi/src/store.rs`'s helper functions (`cstr_to_str`, `slice_from_raw`, `store_ref`, ...) for the canonical shape: the comment names the null-check or caller contract that makes the following raw-pointer operation defined behavior.
+- Every public function that dereferences a raw pointer is declared `unsafe fn` with a `/// # Safety` doc section enumerating the caller's obligations. This isn't a style preference: `clippy::not_unsafe_ptr_arg_deref` under `-D warnings` makes it a hard compile failure to omit, exactly as it did the first time this crate was written (see the commit history of `ffi/src/store.rs` if you want the receipt).
+- Every `extern "C"` entry point runs its fallible body through `std::panic::catch_unwind` (via `ffi::error::run_guarded`) before returning to the C/Go caller. A Rust panic unwinding across an `extern "C"` boundary is undefined behavior — there is no exception in this codebase to that rule.
+- Outside `ffi/`, reach for `unsafe` only when there is no safe alternative (e.g. `bytemuck::pod_read_unaligned` over a memory-mapped segment file in `vec/src/storage/segments.rs`), and hold it to the same `// SAFETY:` standard.
+
+**Testing.**
+- Unit tests for a module's internal behavior live inline, in `#[cfg(test)] mod tests` at the bottom of the file they test (see `ltm/src/config.rs`, `ltm/src/namespace.rs`).
+- Cross-cutting or multi-module behavior — crash recovery, multi-tenant isolation, hybrid recall correctness, the raw FFI ABI — lives in `tests/*.rs` at the crate root (`ltm/tests/`, `ffi/tests/`).
+- Any test that touches the filesystem uses `tempfile::tempdir()` for an isolated path; never a fixed or shared directory, and never a path under the repository itself.
+- A concurrency-sensitive code path gets a dedicated test that actually spins up multiple threads against a shared handle (see `vec/src/concurrent.rs`'s tests) — a passing single-threaded test proves nothing about a `Mutex`/`RwLock` boundary.
+
+**Formatting & linting.**
+```bash
+cargo fmt --check            # must produce no diff
+cargo clippy --workspace -- -D warnings   # must be clean; this is CI's actual gate
+cargo test --workspace       # every crate's unit + integration tests
+```
+An `#[allow(clippy::...)]` is only acceptable with a comment explaining why the lint is a false positive at that specific site (see `#[allow(clippy::too_many_arguments)]` on `vivvy_store_format_context` — a wide, flat C ABI function is exactly the case that lint is meant to *not* flag well; the comment says so).
+
+**Naming.** A crate's Cargo package name and its Rust path identifier must correspond exactly under hyphen→underscore substitution (`vivvy-core` ⇒ `use vivvy_core::...`). Don't let the two drift — it's the kind of inconsistency a rename pass (crate renamed, `use` paths missed) introduces silently.
+
+---
+
+### 8.3 Python Guide (`py/`)
+
+**Binding philosophy.** `py/src/lib.rs` is a thin façade: it extracts Python arguments into Rust values, builds a `vivvy-memory`/`vivvy-core` request, and delegates immediately. It contains argument parsing and error translation only — see §8.1 rule 4.
+
+**GIL discipline.** Any call that touches the store or index runs the actual Rust work inside `py.allow_threads(...)`; only argument extraction happens with the GIL held. This is what lets one Python process run multiple concurrent `insert`/`search`/`recall` calls truly in parallel rather than serialized behind the GIL. Every method on `PyMemoryStore` and `Index` follows this shape:
+```rust
+let store = self.inner.clone();
+py.allow_threads(move || {
+    store.recall(req).map_err(|e| PyValueError::new_err(e.to_string()))
+})
+```
+If you add a new method that calls into `vivvy-memory`/`vivvy-core`, wrap the call in `allow_threads` the same way — a method that forgets to do this silently reintroduces GIL contention under concurrent load, which no test in this repository currently catches by itself, so get it right at write time.
+
+**Error mapping.** Every `Result::Err` from the Rust layer surfaces as `PyValueError` (or `PyTypeError` for a wrong Python-side argument shape) via `.map_err(|e| PyValueError::new_err(e.to_string()))`. See §8.1 rule 2 for the known gap here: the numeric `ErrorCode` is not currently preserved across this boundary, only the formatted message.
+
+**Argument handling.**
+- Any vector-shaped parameter accepts either a plain Python `list[float]` or a contiguous 1D NumPy `float32` array — see `PyVectorInput`. A non-contiguous array is rejected with an explicit message rather than silently copied; silently copying would hide a real performance cliff from the caller.
+- Optional dict-shaped parameters (`metadata`, `filter_metadata`) go through `parse_py_dict_metadata`, which validates every value is a `str`/`int`/`float`/`bool` — exactly what round-trips through `serde_json::Value` on the Rust side. Don't let a new metadata value type reach Rust without validating it converts cleanly first.
+- Give every optional argument an explicit, Python-visible default via `#[pyo3(signature = (...))]` rather than relying on `Option<T>` alone — the default should be discoverable from `help(vivvy.MemoryStore.remember)` in a Python REPL, not just from reading Rust source. Keep [§2](#2-python-complete-code-guide-vivvy)'s documented defaults in sync with whatever you change here.
+
+**Testing.**
+- One `pytest` file per behavior area under `py/tests/`, matching the existing split (`test_basic_ann_search.py`, `test_memory_store.py`, `test_metadata_filtering.py`, ...) — a new behavior area gets a new file rather than growing an unrelated one.
+- Every test opens its store inside a `tmp_path`/`tmpdir` fixture; never a fixed or shared directory.
+- A Rust-side change requires rebuilding the extension before Python tests can see it:
+```bash
+cd py && maturin develop --release && pytest -v
+```
+
+**Known style gap.** Unlike Rust (`rustfmt`) and Go (`gofmt`), no formatter is currently wired into CI for `py/`. `black`/`ruff format` would be a reasonable, low-risk addition if the project wants Python held to the same "tool output is the answer" standard as §8.1 rule 6 — until then, match the surrounding file's style by hand (PEP 8, the existing test files' layout).
+
+---
+
+### 8.4 Go Guide (`go/`)
+
+**Binding philosophy.** `go/vivvy.go` is a thin façade over `vivvy-ffi`, mirroring the Python crate's role: it marshals Go values to/from the C ABI's JSON envelopes and raw vector pointers, and owns exactly the memory-safety and lifecycle bookkeeping cgo requires. No recall scoring, filtering, or journal logic lives here — see §8.1 rule 4.
+
+**Error handling.** Every fallible method returns a plain Go `error`; on an FFI-layer failure that error is a `*vivvy.Error` carrying the numeric `Code` and human-readable `Message` from `vivvy_last_error_message()`. Callers branch with `errors.As`, never by parsing `Message`:
+```go
+var ferr *vivvy.Error
+if errors.As(err, &ferr) && ferr.Code == vivvy.ErrCodeRevisionConflict {
+    // retry with the current revision
+}
+```
+The `ErrCode*` constants in `vivvy.go` are a contract with `go/include/vivvy.h` and `vivvy_memory::ErrorCode` — all three must be kept in exact numeric sync as the error surface evolves; see §8.1 rule 2's table.
+
+**cgo memory discipline.** This is the part of the Go layer where a mistake is a silent leak or a crash, not a compile error, so the rules are absolute:
+- Every `C.CString(...)` gets an immediate `defer C.free(unsafe.Pointer(...))`.
+- Every Rust-owned string returned through an `out_*` pointer gets an immediate `defer C.vivvy_free_string(...)` — copy it out with `C.GoString(...)` first, but register the `defer` before doing anything else that could return early.
+- Never free the pointer from `vivvy_last_error_message()` — it is borrowed thread-local storage, not caller-owned; freeing it is a double-free waiting to happen.
+- A slice passed to a `const float*` C parameter goes through `floatPtr` (`unsafe.Pointer(&slice[0])`), which returns `nil` for a zero-length slice rather than dereferencing an empty slice's backing array — match this pattern for any new pointer-taking parameter rather than open-coding the unsafe cast at a new call site.
+
+**Concurrency & lifecycle.** `Store` wraps its C handle in a `sync.RWMutex`: every operation (`Insert`, `Recall`, `FormatContext`, `Backup`, `Vacuum`) takes `RLock` — so they still run concurrently with each other, matching the Rust store's own internal locking — while `Close` takes the exclusive `Lock`. This is what makes "safe for concurrent use, `Close` exactly once" an enforced property instead of a documentation-only promise; see `withHandle` in `vivvy.go`. Any new type that owns a C-allocated resource should follow the same shape:
+- Register a `runtime.SetFinalizer` backstop in the constructor, as insurance against a caller that forgets to call `Close` — never as a substitute for it.
+- Cancel that finalizer (`runtime.SetFinalizer(x, nil)`) the moment the resource is explicitly released, so the common, correct path never touches the GC.
+
+**Testing.**
+```bash
+gofmt -l .          # must report no files
+go vet ./...         # must be clean
+go test -v ./...     # -race for the concurrency tests; -short to skip the multi-second stress test
+```
+All three are wired into `make go-fmt-check` / `make go-vet` / `make go-test(-race)` and into `.github/workflows/go-ffi.yml` on every push/PR. Every test that opens a store uses `t.TempDir()` (never a fixed path) and registers teardown via `t.Cleanup(...)` rather than a bare `defer` at the top of a long test function. A concurrency-sensitive change needs a test that races real goroutines against a shared `*Store` — see `TestConcurrentInsertAndRecall` and `TestConcurrentCloseIsSafe` in `go/vivvy_test.go` — and run under `-race`, not just inspected by eye. A test that only exists to catch a coarse regression (many iterations, multi-second runtime) belongs behind `testing.Short()`, as `TestMemoryStressNoUnboundedGrowth` demonstrates, so `go test -short` stays fast for everyday iteration.
+
+---
+
+## 9. Licensing & Commercial Terms (BSL-1.1)
+
+Vivvy workspace packages (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `vivvy-ffi`, `vivvy-go`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)**. See [`LICENSE`](LICENSE) for the full license text.
 
 ### Business Source License 1.1 Summary
 
