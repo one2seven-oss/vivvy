@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
-use vivy_core::concurrent::VivyIndex;
-use vivy_core::distance::Metric;
-use vivy_core::flat::FlatIndex;
-use vivy_memory::*;
+use vivvy_core::concurrent::VivvyIndex;
+use vivvy_core::distance::Metric;
+use vivvy_core::flat::FlatIndex;
+use vivvy_memory::*;
 
 fn main() {
     println!("==================================================");
-    println!("      VIVY ARCHITECTURE BENCHMARK SUITE          ");
+    println!("      VIVVY ARCHITECTURE BENCHMARK SUITE          ");
     println!("==================================================");
 
     println!("\n--- Part 1: Core Vector Engine Benchmarks ---");
@@ -46,7 +46,7 @@ fn run_vector_engine_benchmark(dims: usize, record_count: usize, query_count: us
     drop(flat);
 
     let hnsw_build_start = Instant::now();
-    let index = VivyIndex::new(dims, Metric::L2, None::<&str>, None::<&str>).unwrap();
+    let index = VivvyIndex::new(dims, Metric::L2, None::<&str>, None::<&str>).unwrap();
     for vec in &dataset {
         black_box(index.insert(black_box(vec.clone()))).unwrap();
     }

@@ -13,7 +13,7 @@ pub use config::MemoryConfig;
 pub use crypto::{KeyProvider, MissingKeyProvider, NoOpDevKeyProvider};
 pub use error::{ErrorCode, MemoryError, Result};
 pub use health::StoreHealth;
-pub use index_adapter::{InMemoryTestIndex, VectorIndex, VivyVectorIndex};
+pub use index_adapter::{InMemoryTestIndex, VectorIndex, VivvyVectorIndex};
 pub use model::{
     ContextFormatOptions, ForgetRequest, MemoryFilter, MemoryKind, MemoryRecord, MemoryStatus,
     RecallExplanation, RecallItem, RecallRequest, RecallResponse, RememberRequest, UpdateRequest,
@@ -25,7 +25,7 @@ pub use telemetry::TelemetryRecord;
 use crate::journal::JournalCoordinator;
 use std::sync::Arc;
 use uuid::Uuid;
-use vivy_core::distance::Metric;
+use vivvy_core::distance::Metric;
 
 /// A local, durable, namespace-isolated memory store for AI agents.
 pub struct MemoryStore {
@@ -49,7 +49,7 @@ impl MemoryStore {
         let db_path = path.join("memory.db");
         let repo = Arc::new(Repository::open(db_path)?);
 
-        let index = Arc::new(VivyVectorIndex::new_with_dir(
+        let index = Arc::new(VivvyVectorIndex::new_with_dir(
             config.dimensions(),
             Metric::Cosine,
             Some(config.path()),
@@ -265,7 +265,7 @@ impl MemoryStore {
                     }
                 }
 
-                let distance = vivy_core::distance::cosine(&req.query_embedding, &record.embedding);
+                let distance = vivvy_core::distance::cosine(&req.query_embedding, &record.embedding);
                 let similarity = (1.0 - (distance / 2.0)).clamp(0.0, 1.0);
                 let importance = record.importance.clamp(0.0, 1.0);
 
@@ -324,7 +324,7 @@ impl MemoryStore {
                     // Redundancy term: max similarity to already selected items
                     let mut max_sim = 0.0f32;
                     for sel in &selected {
-                        let dist = vivy_core::distance::cosine(
+                        let dist = vivvy_core::distance::cosine(
                             &candidate.memory.embedding,
                             &sel.memory.embedding,
                         );

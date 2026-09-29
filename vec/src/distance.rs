@@ -1,6 +1,6 @@
 //! Distance Kernels
 //!
-//! The three metrics Vivy uses to compare vectors:
+//! The three metrics Vivvy uses to compare vectors:
 //!
 //! **L2 Squared** — sum of squared differences. Drops the final sqrt because
 //! it's monotonic — preserves nearest-neighbour ordering and saves one sqrt

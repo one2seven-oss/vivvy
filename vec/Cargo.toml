@@ -1,11 +1,11 @@
 [package]
-name = "vivy-core"
-version = "0.1.0"
+name = "vivvy-core"
+version = "0.1.0-alpha"
 edition = "2021"
 license = "BUSL-1.1"
-description = "Core vector index engine for Vivy — single-machine, memory-honest vector search"
-repository = "https://github.com/one2seven-oss/vivy"
-homepage = "https://github.com/one2seven-oss/vivy"
+description = "Core vector index engine for Vivvy — single-machine, memory-honest vector search"
+repository = "https://github.com/one2seven-oss/vivvy"
+homepage = "https://github.com/one2seven-oss/vivvy"
 readme = "README.md"
 
 [features]

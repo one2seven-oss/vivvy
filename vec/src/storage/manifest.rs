@@ -3,7 +3,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-const MANIFEST_MAGIC: &str = "VIVY_MANIFEST_V1";
+const MANIFEST_MAGIC: &str = "VIVVY_MANIFEST_V1";
 
 #[derive(Debug, Error)]
 pub enum ManifestError {
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn test_manifest_roundtrip() {
         let dir = tempdir().unwrap();
-        let manifest = Manifest::new(vec!["seg-1.vivy".into(), "seg-2.vivy".into()]);
+        let manifest = Manifest::new(vec!["seg-1.vivvy".into(), "seg-2.vivvy".into()]);
         manifest.save(dir.path()).unwrap();
 
         let loaded = Manifest::load(dir.path()).unwrap().expect("manifest exists");

@@ -1,11 +1,11 @@
 import tempfile
 import pytest
-import vivy
+import vivvy
 
 
 def test_memory_store_full_lifecycle():
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         # 1. Remember
         mem_id = store.remember(
@@ -74,7 +74,7 @@ def test_remember_reopen_recall():
     """Verify remember -> close (drop) -> reopen -> recall workflow."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Phase 1: Open store, remember item, drop reference
-        store1 = vivy.MemoryStore.open(tmpdir, 4, "embedding-v1")
+        store1 = vivvy.MemoryStore.open(tmpdir, 4, "embedding-v1")
         mem_id = store1.remember(
             tenant_id="tenant-acme",
             namespace="docs",
@@ -86,7 +86,7 @@ def test_remember_reopen_recall():
         del store1
 
         # Phase 2: Reopen store from same directory, query recall
-        store2 = vivy.MemoryStore.open(tmpdir, 4, "embedding-v1")
+        store2 = vivvy.MemoryStore.open(tmpdir, 4, "embedding-v1")
         results = store2.recall(
             tenant_id="tenant-acme",
             namespace="docs",
@@ -102,7 +102,7 @@ def test_remember_reopen_recall():
 def test_dimension_mismatch_error():
     """Verify passing embedding with invalid dimension raises ValueError."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 4, "embedding-v1")
+        store = vivvy.MemoryStore.open(tmpdir, 4, "embedding-v1")
 
         with pytest.raises(ValueError, match="Dimension mismatch"):
             store.remember(
@@ -123,7 +123,7 @@ def test_dimension_mismatch_error():
 def test_invalid_scope_error():
     """Verify empty tenant_id or namespace raises ValueError."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "embedding-v1")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "embedding-v1")
 
         with pytest.raises(ValueError, match="tenant_id must not be empty"):
             store.remember(
@@ -145,7 +145,7 @@ def test_invalid_scope_error():
 def test_revision_conflict_error():
     """Verify update with mismatched expected_revision raises ValueError."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "embedding-v1")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "embedding-v1")
         mem_id = store.remember(
             tenant_id="tenant-a",
             namespace="ns-1",
@@ -166,7 +166,7 @@ def test_revision_conflict_error():
 def test_cross_tenant_isolation():
     """Verify zero cross-tenant retrieval leakage in recall and get."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         mem_id = store.remember(
             tenant_id="tenant-alpha",
@@ -190,7 +190,7 @@ def test_cross_tenant_isolation():
 def test_memory_store_batch_operations():
     """Verify batch memory insertion (remember_batch) and deletion (forget_batch)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         records = [
             {
@@ -233,7 +233,7 @@ def test_memory_store_batch_operations():
 def test_memory_store_filter_metadata():
     """Verify metadata dictionary filtering in MemoryStore.recall()."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         store.remember(
             tenant_id="acme",
@@ -296,7 +296,7 @@ def test_memory_store_filter_metadata():
 def test_memory_store_format_context():
     """Verify PyMemoryStore.format_context() string formatting and filtering options."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         store.remember(
             tenant_id="tenant-ctx",
@@ -354,7 +354,7 @@ def test_memory_store_format_context():
 def test_memory_store_backup():
     """Verify MemoryStore.backup() produces a functional independent store snapshot."""
     with tempfile.TemporaryDirectory() as primary_dir, tempfile.TemporaryDirectory() as backup_dir:
-        store = vivy.MemoryStore.open(primary_dir, 3, "test-model")
+        store = vivvy.MemoryStore.open(primary_dir, 3, "test-model")
 
         mem_id = store.remember(
             tenant_id="acme",
@@ -368,7 +368,7 @@ def test_memory_store_backup():
         store.backup(backup_dir)
 
         # Open backed-up store
-        restored = vivy.MemoryStore.open(backup_dir, 3, "test-model")
+        restored = vivvy.MemoryStore.open(backup_dir, 3, "test-model")
 
         health = restored.health()
         assert health["is_healthy"] is True
@@ -393,7 +393,7 @@ def test_memory_store_time_window_filtering():
     import sqlite3
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, 3, "test-model")
+        store = vivvy.MemoryStore.open(tmpdir, 3, "test-model")
 
         id1 = store.remember(
             tenant_id="acme",

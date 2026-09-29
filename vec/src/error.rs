@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum VivyError {
+pub enum VivvyError {
     #[error("WAL error: {0}")]
     Wal(#[from] crate::storage::wal::WalError),
 
@@ -15,4 +15,4 @@ pub enum VivyError {
     DimensionMismatch,
 }
 
-pub type VivyResult<T> = Result<T, VivyError>;
+pub type VivvyResult<T> = Result<T, VivvyError>;

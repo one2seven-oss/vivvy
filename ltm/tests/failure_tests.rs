@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::tempdir;
-use vivy_memory::*;
+use vivvy_memory::*;
 
 #[test]
 fn test_fault_injection_remember_unapplied_op() {

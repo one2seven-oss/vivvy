@@ -1,4 +1,4 @@
-# Vivy LTM Engine — Benchmark Report
+# Vivvy LTM Engine — Benchmark Report
 
 > **Generated:** 2026-09-27T17:26:06Z  |  **Host:** `cachyos`
 
@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Vivy is an **in-process Rust/PyO3 LTM engine** that delivers sub-millisecond vector search and durable SQLite-backed memory for AI agents — **no network hop, no daemon, no external service**.
+Vivvy is an **in-process Rust/PyO3 LTM engine** that delivers sub-millisecond vector search and durable SQLite-backed memory for AI agents — **no network hop, no daemon, no external service**.
 
 | Key Claim | Measured Value |
 | :--- | ---: |
@@ -52,20 +52,20 @@ Vivy is an **in-process Rust/PyO3 LTM engine** that delivers sub-millisecond vec
 
 ---
 
-## Vivy vs. Competitors
+## Vivvy vs. Competitors
 
-> **Disclaimer:** Competitor numbers are derived from published documentation and independent benchmarks. Vivy figures are measured on this machine; competitor figures are indicative.
+> **Disclaimer:** Competitor numbers are derived from published documentation and independent benchmarks. Vivvy figures are measured on this machine; competitor figures are indicative.
 
 | System | Architecture | p95 Latency | Write Throughput | Recall@10 | Requires Network | Cost at 1M records |
 | :--- | :--- | ---: | ---: | ---: | :---: | :--- |
-| **Vivy** (MemoryStore, 10K) | In-process Rust/PyO3 | **4.05 ms** | **546/s** | **46.0%** | ❌ | Free (BSL) |
-| **Vivy** (HNSW, 100K) | In-process Rust/PyO3 | **2.52 ms** | **785/s** | **82.0%** | ❌ | Free (BSL) |
+| **Vivvy** (MemoryStore, 10K) | In-process Rust/PyO3 | **4.05 ms** | **546/s** | **46.0%** | ❌ | Free (BSL) |
+| **Vivvy** (HNSW, 100K) | In-process Rust/PyO3 | **2.52 ms** | **785/s** | **82.0%** | ❌ | Free (BSL) |
 | Pinecone (Serverless) | Cloud gRPC | ~8–40 ms | ~500–2K/s | ~0.95 | ✅ | ~$70–$200/mo |
 | Qdrant (Cloud) | Cloud REST/gRPC | ~5–25 ms | ~1–3K/s | ~0.96 | ✅ | ~$50–$150/mo |
 | Mem0 (Python) | Python + ext DB | ~20–100 ms | ~200–800/s | ~0.80 | ✅ | API costs |
 | Zep (OSS) | Go + Postgres/pgvector | ~10–50 ms | ~400–1.5K/s | ~0.88 | ✅ | Self-hosted |
 
-> Vivy's **2.52 ms p95** for ANN search at 100K vectors beats every cloud-hosted option by a structural margin: zero network serialisation, zero TCP round-trips, zero service process overhead.
+> Vivvy's **2.52 ms p95** for ANN search at 100K vectors beats every cloud-hosted option by a structural margin: zero network serialisation, zero TCP round-trips, zero service process overhead.
 
 ---
 

@@ -1,31 +1,31 @@
-import vivy
+import vivvy
 import math
 
 
 def test_l2_identical_is_zero():
-    idx = vivy.Index(3, "l2")
+    idx = vivvy.Index(3, "l2")
     idx.insert([1.0, 2.0, 3.0])
     results = idx.search([1.0, 2.0, 3.0], k=1)
     assert abs(results[0][1]) < 1e-6
 
 
 def test_cosine_identical_is_zero():
-    idx = vivy.Index(3, "cosine")
+    idx = vivvy.Index(3, "cosine")
     idx.insert([1.0, 2.0, 3.0])
     results = idx.search([1.0, 2.0, 3.0], k=1)
     assert abs(results[0][1]) < 1e-6
 
 
 def test_cosine_orthogonal_is_one():
-    idx = vivy.Index(2, "cosine")
+    idx = vivvy.Index(2, "cosine")
     idx.insert([1.0, 0.0])
     results = idx.search([0.0, 1.0], k=1)
     assert abs(results[0][1] - 1.0) < 1e-5
 
 
 def test_cosine_vs_l2_ranking_differs():
-    l2 = vivy.Index(2, "l2")
-    cos = vivy.Index(2, "cosine")
+    l2 = vivvy.Index(2, "l2")
+    cos = vivvy.Index(2, "cosine")
 
     vecs = [[10.0, 0.0], [1.0, 1.0]]
     for v in vecs:
@@ -40,7 +40,7 @@ def test_cosine_vs_l2_ranking_differs():
 
 
 def test_dot_product():
-    idx = vivy.Index(3, "dot")
+    idx = vivvy.Index(3, "dot")
     idx.insert([1.0, 0.0, 0.0])
     idx.insert([2.0, 0.0, 0.0])
     results = idx.search([1.0, 0.0, 0.0], k=2)
@@ -50,7 +50,7 @@ def test_dot_product():
 
 def test_invalid_metric_raises():
     try:
-        vivy.Index(3, "invalid_metric")
+        vivvy.Index(3, "invalid_metric")
         assert False, "should have raised"
     except ValueError:
         pass

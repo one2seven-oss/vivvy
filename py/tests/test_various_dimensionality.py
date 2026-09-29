@@ -1,9 +1,9 @@
-import vivy
+import vivvy
 
 
 def test_high_dimensional_vectors():
     dims = 128
-    idx = vivy.Index(dims, "l2")
+    idx = vivvy.Index(dims, "l2")
     for i in range(100):
         v = [float(i + j) * 0.01 for j in range(dims)]
         idx.insert(v)
@@ -14,7 +14,7 @@ def test_high_dimensional_vectors():
 
 
 def test_single_dimension():
-    idx = vivy.Index(1, "l2")
+    idx = vivvy.Index(1, "l2")
     idx.insert([0.0])
     idx.insert([10.0])
     idx.insert([100.0])
@@ -26,7 +26,7 @@ def test_single_dimension():
 
 def test_large_dimensionality_basic():
     dims = 256
-    idx = vivy.Index(dims, "cosine")
+    idx = vivvy.Index(dims, "cosine")
     v = [1.0 / (i + 1) for i in range(dims)]
     idx.insert(v)
     results = idx.search(v, k=1)

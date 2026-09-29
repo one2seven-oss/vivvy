@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::tempdir;
-use vivy_memory::*;
+use vivvy_memory::*;
 
 #[test]
 fn test_idempotent_remember() {

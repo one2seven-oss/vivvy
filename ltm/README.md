@@ -1,4 +1,4 @@
-# vivy-memory
+# vivvy-memory
 
 Local, durable, namespace-isolated long-term memory runtime for AI agents.
 

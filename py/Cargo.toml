@@ -1,18 +1,18 @@
 [package]
-name = "vivy-py"
-version = "0.1.0"
+name = "vivvy-py"
+version = "0.1.0-alpha"
 edition = "2021"
 license = "BUSL-1.1"
-description = "Python bindings for Vivy vector search engine"
+description = "Python bindings for Vivvy vector search engine"
 publish = false
 
 [dependencies]
-vivy-core = { version = "0.1.0", path = "../vec" }
-vivy-memory = { version = "0.1.0", path = "../ltm" }
+vivvy-core = { version = "0.1.0-alpha", path = "../vec" }
+vivvy-memory = { version = "0.1.0-alpha", path = "../ltm" }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py38"] }
 numpy = "0.24"
 serde_json = "1"
 
 [lib]
-name = "vivy_py"
+name = "vivvy_py"
 crate-type = ["cdylib"]

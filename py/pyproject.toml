@@ -3,16 +3,16 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "vivy-vdb"
-version = "0.1.0"
+name = "vivvy-vdb"
+version = "0.1.0a0"
 description = "Vector search that lives on one machine"
 requires-python = ">=3.8"
 license = "BUSL-1.1"
 
 [project.urls]
-Homepage = "https://github.com/one2seven-oss/vivy"
-Repository = "https://github.com/one2seven-oss/vivy"
+Homepage = "https://github.com/one2seven-oss/vivvy"
+Repository = "https://github.com/one2seven-oss/vivvy"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "vivy"
+module-name = "vivvy"

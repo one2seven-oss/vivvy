@@ -1,8 +1,8 @@
-import vivy
+import vivvy
 
 
 def test_insert_and_search():
-    idx = vivy.Index(3, "l2")
+    idx = vivvy.Index(3, "l2")
     idx.insert([1.0, 0.0, 0.0])
     idx.insert([0.0, 1.0, 0.0])
     idx.insert([0.0, 0.0, 1.0])
@@ -13,7 +13,7 @@ def test_insert_and_search():
 
 
 def test_nearest_neighbor_is_closest():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(100):
         idx.insert([float(i), 0.0])
 
@@ -23,7 +23,7 @@ def test_nearest_neighbor_is_closest():
 
 
 def test_results_sorted_by_distance():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(50):
         idx.insert([float(i), float(50 - i)])
 
@@ -34,7 +34,7 @@ def test_results_sorted_by_distance():
 
 
 def test_returns_correct_number_of_results():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(20):
         idx.insert([float(i), 0.0])
 

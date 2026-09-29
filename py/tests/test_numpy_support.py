@@ -1,11 +1,11 @@
 import pytest
 import numpy as np
-import vivy
+import vivvy
 import tempfile
 import time
 
 def test_index_insert_and_search_numpy():
-    idx = vivy.Index(3, "l2")
+    idx = vivvy.Index(3, "l2")
     vec1 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     vec2 = np.array([4.0, 5.0, 6.0], dtype=np.float32)
 
@@ -20,8 +20,8 @@ def test_index_insert_and_search_numpy():
     assert results[1][0] == id2
 
 def test_identical_recall_list_vs_numpy():
-    idx_list = vivy.Index(128, "cosine")
-    idx_np = vivy.Index(128, "cosine")
+    idx_list = vivvy.Index(128, "cosine")
+    idx_np = vivvy.Index(128, "cosine")
 
     np.random.seed(42)
     sample_embeddings = np.random.randn(50, 128).astype(np.float32)
@@ -38,7 +38,7 @@ def test_identical_recall_list_vs_numpy():
     assert results_list == results_np
 
 def test_numpy_error_handling():
-    idx = vivy.Index(3, "l2")
+    idx = vivvy.Index(3, "l2")
 
     vec_f64 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
     with pytest.raises(TypeError):
@@ -65,7 +65,7 @@ def test_numpy_error_handling():
         idx.insert(strided_arr)
 
 def test_index_insert_batch_numpy_2d():
-    idx = vivy.Index(4, "l2")
+    idx = vivvy.Index(4, "l2")
     batch_embeddings = np.array([
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -81,7 +81,7 @@ def test_index_insert_batch_numpy_2d():
 
 def test_memory_store_numpy():
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = vivy.MemoryStore.open(tmpdir, dimensions=4, embedding_model="test-model")
+        store = vivvy.MemoryStore.open(tmpdir, dimensions=4, embedding_model="test-model")
         
         emb1 = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
         emb2 = np.array([0.5, 0.6, 0.7, 0.8], dtype=np.float32)
@@ -119,7 +119,7 @@ def test_memory_store_numpy():
 
 def test_microbenchmark_search_performance():
     dims = 1536
-    idx = vivy.Index(dims, "cosine")
+    idx = vivvy.Index(dims, "cosine")
 
     np.random.seed(42)
     vectors = np.random.randn(100, dims).astype(np.float32)

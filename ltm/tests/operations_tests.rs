@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::tempdir;
-use vivy_memory::*;
+use vivvy_memory::*;
 
 #[test]
 fn test_health_snapshot_reports_accurate_counts_and_sizes() {

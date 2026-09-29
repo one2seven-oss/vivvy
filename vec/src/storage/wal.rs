@@ -123,7 +123,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_wal_roundtrip() {
-        let dir = std::env::temp_dir().join("vivy-wal-test");
+        let dir = std::env::temp_dir().join("vivvy-wal-test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test.log");
 

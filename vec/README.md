@@ -1,6 +1,6 @@
-# vivy-core
+# vivvy-core
 
-Single-machine, high-performance vector index engine for Vivy.
+Single-machine, high-performance vector index engine for Vivvy.
 
 ## Features
 

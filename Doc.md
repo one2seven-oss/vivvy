@@ -1,8 +1,8 @@
-# Vivy: Comprehensive Integration Guide
+# Vivvy: Comprehensive Integration Guide
 
-Vivy is a local, durable long-term memory (LTM) runtime and single-machine vector engine engineered specifically for autonomous AI agents and local LLM applications. It provides zero-network, daemonless, crash-safe memory persistence combined with fast approximate nearest neighbor (ANN) vector retrieval.
+Vivvy is a local, durable long-term memory (LTM) runtime and single-machine vector engine engineered specifically for autonomous AI agents and local LLM applications. It provides zero-network, daemonless, crash-safe memory persistence combined with fast approximate nearest neighbor (ANN) vector retrieval.
 
-This document serves as the authoritative, production-grade guide for integrating, operating, and managing Vivy, with primary focus on Python code integration (`vivy-py`).
+This document serves as the authoritative, production-grade guide for integrating, operating, and managing Vivvy, with primary focus on Python code integration (`vivvy-py`).
 
 ---
 
@@ -12,9 +12,9 @@ This document serves as the authoritative, production-grade guide for integratin
    - [Core Design Guarantees](#core-design-guarantees)
    - [Workspace Package Layout](#workspace-package-layout)
    - [System Dataflow & Layering](#system-dataflow--layering)
-2. [Python Complete Code Guide (`vivy`)](#2-python-complete-code-guide-vivy)
+2. [Python Complete Code Guide (`vivvy`)](#2-python-complete-code-guide-vivvy)
    - [Installation & Build Setup](#installation--build-setup)
-   - [High-Level Agent Memory (`vivy.MemoryStore`)](#high-level-agent-memory-vivymemorystore)
+   - [High-Level Agent Memory (`vivvy.MemoryStore`)](#high-level-agent-memory-vivvymemorystore)
      - [1. Initializing & Opening a Store (`open`)](#1-initializing--opening-a-store-open)
      - [2. Storing Observations & Knowledge (`remember`)](#2-storing-observations--knowledge-remember)
      - [3. Memory Kinds & Semantic Categorization](#3-memory-kinds--semantic-categorization)
@@ -28,7 +28,7 @@ This document serves as the authoritative, production-grade guide for integratin
      - [11. Index Accelerator Rebuilding (`rebuild_index`)](#11-index-accelerator-rebuilding-rebuild_index)
      - [12. Optimistic Concurrent Memory Update (`update`)](#12-optimistic-concurrent-memory-update-update)
      - [13. Bulk Soft-Delete (`forget_batch`)](#13-bulk-soft-delete-forget_batch)
-   - [Low-Level Vector Search Index (`vivy.Index`)](#low-level-vector-search-index-vivyindex)
+   - [Low-Level Vector Search Index (`vivvy.Index`)](#low-level-vector-search-index-vivvyindex)
      - [1. Index Construction & Metric Options](#1-index-construction--metric-options)
      - [2. Vector Ingestion (`insert`, `insert_batch`)](#2-vector-ingestion-insert-insert_batch)
      - [3. Metadata Filter Queries (`search`)](#3-metadata-filter-queries-search)
@@ -39,13 +39,13 @@ This document serves as the authoritative, production-grade guide for integratin
    - [Pattern C: Episodic Memory Buffer with Expiration](#pattern-c-episodic-memory-buffer-with-expiration)
    - [Pattern D: High-Throughput Batch Ingestion Pipeline](#pattern-d-high-throughput-batch-ingestion-pipeline)
    - [Pattern E: Background Maintenance Worker (Health & Vacuum)](#pattern-e-background-maintenance-worker-health--vacuum)
-4. [Rust Core Reference (`vivy-memory` & `vivy-core`)](#4-rust-core-reference-vivy-memory--vivy-core)
+4. [Rust Core Reference (`vivvy-memory` & `vivvy-core`)](#4-rust-core-reference-vivvy-memory--vivvy-core)
    - [Rust Crate Architecture](#rust-crate-architecture)
    - [Rust MemoryStore Reference](#rust-memorystore-reference)
-   - [Rust VivyIndex Vector Reference](#rust-vivyindex-vector-reference)
+   - [Rust VivvyIndex Vector Reference](#rust-vivvyindex-vector-reference)
 5. [Storage Schemas, Binary Formats & Data Models](#5-storage-schemas-binary-formats--data-models)
    - [SQLite Canonical Schema (`memories`, `operations`, `memories_fts`)](#sqlite-canonical-schema-memories-operations-memories_fts)
-   - [Sealed Segment File Format (`.vivy`)](#sealed-segment-file-format-vivy)
+   - [Sealed Segment File Format (`.vivvy`)](#sealed-segment-file-format-vivvy)
    - [Write-Ahead Log Protocol (`.wal`)](#write-ahead-log-protocol-wal)
    - [Directory Manifest Protocol (`manifest.idx`)](#directory-manifest-protocol-manifestidx)
 6. [Operational Maintenance & Recovery](#6-operational-maintenance--recovery)
@@ -65,23 +65,23 @@ This document serves as the authoritative, production-grade guide for integratin
 
 ### Core Design Guarantees
 
-Vivy is built on three fundamental architectural guarantees:
+Vivvy is built on three fundamental architectural guarantees:
 
 1. **Durability First (SQLite WAL Primary Truth)**: SQLite with Write-Ahead Logging (`PRAGMA journal_mode=WAL`) serves as the authoritative, crash-safe canonical data store. Every memory record, revision, provenance attribute, and journal entry is committed to SQLite.
-2. **Index as Derived State**: The `vivy-core` HNSW vector graph is strictly treated as an in-memory, auto-rebuildable acceleration index. If the process crashes or vector memory is corrupted, the index is re-populated directly from active SQLite records on boot without data loss.
+2. **Index as Derived State**: The `vivvy-core` HNSW vector graph is strictly treated as an in-memory, auto-rebuildable acceleration index. If the process crashes or vector memory is corrupted, the index is re-populated directly from active SQLite records on boot without data loss.
 3. **Strict Multi-Tenant Isolation**: Partitioning across tenants, namespaces, agents, and users (`MemoryScope`) is validated at API entry and strictly enforced through parameterized SQL queries and retrieval post-filters. Zero cross-tenant data leakage is allowed under any operation.
 
 ---
 
 ### Workspace Package Layout
 
-Vivy is organized into four specialized packages:
+Vivvy is organized into four specialized packages:
 
 | Package | Path | Responsibility |
 | :--- | :--- | :--- |
-| **`vivy-py`** | `py/` | Native Python extension module providing high-level `vivy.MemoryStore` and low-level `vivy.Index` classes with GIL release. |
-| **`vivy-memory`** | `ltm/` | High-level durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, 2-phase operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable 4-factor scoring, and MMR diversity reranking. |
-| **`vivy-core`** | `vec/` | High-throughput in-process vector engine: sharded HNSW graphs, Roaring bitmap metadata filters, 64-bit ID safety, atomic sealed segments (`.vivy`), WAL, and auto-compactor. |
+| **`vivvy-py`** | `py/` | Native Python extension module providing high-level `vivvy.MemoryStore` and low-level `vivvy.Index` classes with GIL release. |
+| **`vivvy-memory`** | `ltm/` | High-level durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, 2-phase operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable 4-factor scoring, and MMR diversity reranking. |
+| **`vivvy-core`** | `vec/` | High-throughput in-process vector engine: sharded HNSW graphs, Roaring bitmap metadata filters, 64-bit ID safety, atomic sealed segments (`.vivvy`), WAL, and auto-compactor. |
 | **`bench`** | `sim/` | Synthetic data benchmark suite for measuring QPS, latency, startup recovery, and ground-truth recall accuracy. |
 
 ---
@@ -91,11 +91,11 @@ Vivy is organized into four specialized packages:
 ```mermaid
 flowchart TD
     subgraph Client ["Python Application / AI Agent"]
-        PyStore["vivy.MemoryStore (Agent LTM)"]
-        PyIndex["vivy.Index (Vector ANN)"]
+        PyStore["vivvy.MemoryStore (Agent LTM)"]
+        PyIndex["vivvy.Index (Vector ANN)"]
     end
 
-    subgraph LTM ["vivy-memory (LTM Engine)"]
+    subgraph LTM ["vivvy-memory (LTM Engine)"]
         Scope["Scope Validation (Tenant/Namespace/Agent/User)"]
         Journal["JournalCoordinator (2-Phase State Machine)"]
         Hybrid["Hybrid Recall Engine"]
@@ -110,12 +110,12 @@ flowchart TD
             FTSTable["memories_fts (FTS5 Full-Text Search)"]
         end
 
-        subgraph VectorCore ["vivy-core Vector Subsystem"]
+        subgraph VectorCore ["vivvy-core Vector Subsystem"]
             Delta["Sharded HNSW Graphs in RAM"]
             Filter["FilterIndex (Roaring Bitmaps)"]
             WAL["WAL Writer (.wal)"]
             Compactor["Background Compactor Loop"]
-            Sealed["Sealed Segments (.vivy Mmap)"]
+            Sealed["Sealed Segments (.vivvy Mmap)"]
         end
     end
 
@@ -139,11 +139,11 @@ flowchart TD
 
 ---
 
-## 2. Python Complete Code Guide (`vivy`)
+## 2. Python Complete Code Guide (`vivvy`)
 
 ### Installation & Build Setup
 
-`vivy` Python bindings are built using [PyO3](https://pyo3.rs) and [maturin](https://github.com/PyO3/maturin).
+`vivvy` Python bindings are built using [PyO3](https://pyo3.rs) and [maturin](https://github.com/PyO3/maturin).
 
 #### Building locally with Maturin:
 ```bash
@@ -159,21 +159,21 @@ pip install maturin
 maturin develop --release
 ```
 
-Once built, `import vivy` is ready for use in any Python application.
+Once built, `import vivvy` is ready for use in any Python application.
 
 ---
 
-### High-Level Agent Memory (`vivy.MemoryStore`)
+### High-Level Agent Memory (`vivvy.MemoryStore`)
 
-`vivy.MemoryStore` is the primary interface for managing durable long-term memory for AI agents.
+`vivvy.MemoryStore` is the primary interface for managing durable long-term memory for AI agents.
 
 #### 1. Initializing & Opening a Store (`open`)
 
 ```python
-import vivy
+import vivvy
 
 # Open or create a local durable memory store
-store = vivy.MemoryStore.open(
+store = vivvy.MemoryStore.open(
     path="./agent_memory_data",
     dimensions=1536,
     embedding_model="text-embedding-3-small",
@@ -226,7 +226,7 @@ print(f"Memory recorded successfully with ID: {memory_id}")
 
 #### 3. Memory Kinds & Semantic Categorization
 
-Vivy supports five semantic memory categories:
+Vivvy supports five semantic memory categories:
 
 | Kind Name | String Constant | Recommended Use Case |
 | :--- | :--- | :--- |
@@ -286,7 +286,7 @@ for mem_id, content, score in results:
 
 AI agents processing episodic memory often need recency window constraints (e.g. *"What preferences were created in the last 2 hours?"* or *"Recall user instructions recorded within a specific temporal window"*).
 
-Vivy enforces temporal range constraints at both the SQLite candidate retrieval layer (`WHERE created_at_ms >= ? AND created_at_ms <= ?`) and candidate evaluation:
+Vivvy enforces temporal range constraints at both the SQLite candidate retrieval layer (`WHERE created_at_ms >= ? AND created_at_ms <= ?`) and candidate evaluation:
 
 ```python
 import time
@@ -365,7 +365,7 @@ Inspect operational metrics and health status of the memory store without exposi
 ```python
 health = store.health()
 
-print("--- Vivy Store Health Snapshot ---")
+print("--- Vivvy Store Health Snapshot ---")
 print(f"Is Healthy:              {health['is_healthy']}")
 print(f"Active Records:          {health['total_active_records']}")
 print(f"Tombstoned Records:      {health['total_tombstoned_records']}")
@@ -451,17 +451,17 @@ store.forget_batch(
 
 ---
 
-### Low-Level Vector Search Index (`vivy.Index`)
+### Low-Level Vector Search Index (`vivvy.Index`)
 
-For standalone vector search tasks without memory orchestration semantics, use `vivy.Index`.
+For standalone vector search tasks without memory orchestration semantics, use `vivvy.Index`.
 
 #### 1. Index Construction & Metric Options
 
 ```python
-import vivy
+import vivvy
 
 # Create a Cosine distance index for 768-dimensional vectors
-index = vivy.Index(dims=768, metric="cosine")
+index = vivvy.Index(dims=768, metric="cosine")
 ```
 
 ##### Supported Metrics:
@@ -528,7 +528,7 @@ print(f"Total active vectors in delta memory: {len(index)}")
 
 #### 4. Multithreading & GIL Release Characteristics
 
-All compute-intensive operations in `vivy-py` (`insert`, `insert_batch`, `search`, `remember`, `recall`, `forget`, `vacuum_tombstones`, `rebuild_index`) explicitly execute inside `py.allow_threads(...)`.
+All compute-intensive operations in `vivvy-py` (`insert`, `insert_batch`, `search`, `remember`, `recall`, `forget`, `vacuum_tombstones`, `rebuild_index`) explicitly execute inside `py.allow_threads(...)`.
 
 > [!NOTE]
 > Releasing Python's Global Interpreter Lock (GIL) allows Python threads to run concurrent tasks (such as generating LLM embeddings or handling HTTP requests) while Rust processes vector search and graph construction in parallel on background threads.
@@ -540,11 +540,11 @@ All compute-intensive operations in `vivy-py` (`insert`, `insert_batch`, `search
 ### Pattern A: RAG Context Retrieval Agent
 
 ```python
-import vivy
+import vivvy
 
 class RAGAgent:
     def __init__(self, storage_path: str, dimensions: int = 1536):
-        self.store = vivy.MemoryStore.open(
+        self.store = vivvy.MemoryStore.open(
             path=storage_path,
             dimensions=dimensions,
             embedding_model="text-embedding-3-small"
@@ -579,11 +579,11 @@ class RAGAgent:
 ### Pattern B: Multi-Tenant Preference-Aware User Chat Agent
 
 ```python
-import vivy
+import vivvy
 
 class UserChatAgent:
     def __init__(self, store_path: str):
-        self.store = vivy.MemoryStore.open(
+        self.store = vivvy.MemoryStore.open(
             path=store_path,
             dimensions=768,
             embedding_model="nomic-embed-text-v1.5"
@@ -619,9 +619,9 @@ class UserChatAgent:
 
 ```python
 import time
-import vivy
+import vivvy
 
-def store_temporary_session_event(store: vivy.MemoryStore, session_id: str, event_text: str, embedding: list[float], ttl_seconds: int = 3600):
+def store_temporary_session_event(store: vivvy.MemoryStore, session_id: str, event_text: str, embedding: list[float], ttl_seconds: int = 3600):
     now_ms = int(time.time() * 1000)
     expires_at = now_ms + (ttl_seconds * 1000)
 
@@ -642,9 +642,9 @@ def store_temporary_session_event(store: vivy.MemoryStore, session_id: str, even
 ### Pattern D: High-Throughput Batch Ingestion Pipeline
 
 ```python
-import vivy
+import vivvy
 
-def batch_ingest_vectors(index: vivy.Index, records: list[dict]):
+def batch_ingest_vectors(index: vivvy.Index, records: list[dict]):
     """
     records format: [{'vector': [...], 'metadata': {'tag': 'val'}}, ...]
     """
@@ -661,9 +661,9 @@ def batch_ingest_vectors(index: vivy.Index, records: list[dict]):
 
 ```python
 import time
-import vivy
+import vivvy
 
-def run_maintenance_loop(store: vivy.MemoryStore, check_interval_seconds: int = 60):
+def run_maintenance_loop(store: vivvy.MemoryStore, check_interval_seconds: int = 60):
     while True:
         health = store.health()
         print(f"[Maintenance Check] Active: {health['total_active_records']} | Tombstones: {health['total_tombstoned_records']}")
@@ -681,16 +681,16 @@ def run_maintenance_loop(store: vivy.MemoryStore, check_interval_seconds: int = 
 
 ---
 
-## 4. Rust Core Reference (`vivy-memory` & `vivy-core`)
+## 4. Rust Core Reference (`vivvy-memory` & `vivvy-core`)
 
-While Python is the primary user-facing interface, Vivy's underlying Rust engine (`vivy-memory` and `vivy-core`) can be used directly in Rust applications.
+While Python is the primary user-facing interface, Vivvy's underlying Rust engine (`vivvy-memory` and `vivvy-core`) can be used directly in Rust applications.
 
 ### Rust Crate Architecture
 
 ```toml
 [dependencies]
-vivy-memory = { path = "../ltm" }
-vivy-core = { path = "../vec" }
+vivvy-memory = { path = "../ltm" }
+vivvy-core = { path = "../vec" }
 ```
 
 ---
@@ -698,7 +698,7 @@ vivy-core = { path = "../vec" }
 ### Rust MemoryStore Reference
 
 ```rust
-use vivy_memory::{MemoryConfig, MemoryStore, MemoryScope, RememberRequest, RecallRequest, MemoryKind};
+use vivvy_memory::{MemoryConfig, MemoryStore, MemoryScope, RememberRequest, RecallRequest, MemoryKind};
 use std::collections::HashMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -745,14 +745,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-### Rust VivyIndex Vector Reference
+### Rust VivvyIndex Vector Reference
 
 ```rust
-use vivy_core::concurrent::VivyIndex;
-use vivy_core::distance::Metric;
+use vivvy_core::concurrent::VivvyIndex;
+use vivvy_core::distance::Metric;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let index = VivyIndex::new(768, Metric::Cosine, Some("./wal.log"), Some("./segments"))?;
+    let index = VivvyIndex::new(768, Metric::Cosine, Some("./wal.log"), Some("./segments"))?;
     index.insert_with_id(1001, vec![0.1; 768])?;
 
     let hits = index.search(&vec![0.1; 768], 5)?;
@@ -830,14 +830,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 
 ---
 
-### Sealed Segment File Format (`.vivy`)
+### Sealed Segment File Format (`.vivvy`)
 
-Sealed segment files (`seg-<timestamp>.vivy`) are immutable, memory-mapped binary files.
+Sealed segment files (`seg-<timestamp>.vivvy`) are immutable, memory-mapped binary files.
 
 ```text
 +-----------------------------------------------------------------------+
 | Header (64 bytes)                                                     |
-| - Magic: "VIVYSEG\0" (8 bytes)                                        |
+| - Magic: "VIVVYSEG" (8 bytes)                                         |
 | - Version: u32 (1)                                                    |
 | - Num Nodes: u32                                                      |
 | - Dims: u32                                                           |
@@ -879,9 +879,9 @@ Record Layout:
 The manifest tracks the active committed set of sealed segments.
 
 ```text
-VIVY_MANIFEST_V1
-seg-1727250000000000000.vivy
-seg-1727253600000000000.vivy
+VIVVY_MANIFEST_V1
+seg-1727250000000000000.vivvy
+seg-1727253600000000000.vivvy
 ```
 
 Updated atomically via `manifest.<pid>.tmp` creation, `fsync`, and atomic rename over `manifest.idx`.
@@ -892,7 +892,7 @@ Updated atomically via `manifest.<pid>.tmp` creation, `fsync`, and atomic rename
 
 ### Startup Crash Recovery & Reconcile Protocol
 
-When `vivy.MemoryStore.open()` is executed:
+When `vivvy.MemoryStore.open()` is executed:
 1. SQLite migrations (`SCHEMA_V1`, `SCHEMA_V2`) are applied.
 2. `PRAGMA integrity_check` runs. If corruption is found, initialization fails safely.
 3. Pending operations in SQLite (`state = 'pending'`) are reconciled.
@@ -903,7 +903,7 @@ When `vivy.MemoryStore.open()` is executed:
 
 ### Telemetry & Security Invariants
 
-Vivy enforces strict data privacy:
+Vivvy enforces strict data privacy:
 - Raw memory contents, embedding float arrays, query text, and key bytes are **never** included in telemetry logs or health reports.
 - Multi-tenant boundary checks occur at the parameterized SQL level (`WHERE tenant_id = ? AND namespace = ?`).
 
@@ -962,17 +962,17 @@ Real-world measured results from `benchmarks/run_realtime_benchmarks.py` (Intel 
 | Hybrid Recall (10K, 768-dim) | 10,000 | 3.27 ms | 4.05 ms | 297 | 45.0% | 99.7% |
 | Pure HNSW ANN (100K, 768-dim) | 100,000 | 2.27 ms | 2.52 ms | 441 | 82.0% | 100.0% |
 
-> See `benchmarks/BENCHMARK_REPORT.md` and `benchmarks/vivy_benchmark_results.json` for full details and hardware profile.
+> See `benchmarks/BENCHMARK_REPORT.md` and `benchmarks/vivvy_benchmark_results.json` for full details and hardware profile.
 
 ---
 
 ## 8. Licensing & Commercial Terms (BSL-1.1)
 
-Vivy workspace packages (`vivy-core`, `vivy-memory`, `vivy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)**. See [`LICENSE`](LICENSE) for the full license text.
+Vivvy workspace packages (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)**. See [`LICENSE`](LICENSE) for the full license text.
 
 ### Business Source License 1.1 Summary
 
 Under the BSL 1.1 Additional Use Grant:
 - **Non-Production & Evaluation**: Free, unrestricted use for non-production environments (development, local testing, research, and technical evaluations).
 - **Single-Node & Workload Deployment**: Free use in production for non-commercial applications, single-machine deployments, and internal AI agent memory infrastructure.
-- **Commercial Service Limit**: Offering Vivy as a hosted, managed, or cloud API vector database or memory service to third parties requires a commercial license from the Licensor.
+- **Commercial Service Limit**: Offering Vivvy as a hosted, managed, or cloud API vector database or memory service to third parties requires a commercial license from the Licensor.

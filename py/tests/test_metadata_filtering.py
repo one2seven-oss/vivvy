@@ -1,8 +1,8 @@
-import vivy
+import vivvy
 
 
 def test_filter_by_single_field():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(100):
         color = "red" if i % 2 == 0 else "blue"
         idx.insert([float(i), 0.0], metadata={"color": color})
@@ -14,7 +14,7 @@ def test_filter_by_single_field():
 
 
 def test_filter_by_multiple_fields_and():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(100):
         color = "red" if i % 2 == 0 else "blue"
         size = "large" if i >= 50 else "small"
@@ -30,7 +30,7 @@ def test_filter_by_multiple_fields_and():
 
 
 def test_filter_no_matches():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(50):
         idx.insert([float(i), 0.0], metadata={"group": "a"})
 
@@ -39,7 +39,7 @@ def test_filter_no_matches():
 
 
 def test_filter_all_match():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(50):
         idx.insert([float(i), 0.0], metadata={"tag": "all"})
 
@@ -48,7 +48,7 @@ def test_filter_all_match():
 
 
 def test_filter_without_metadata_returns_nothing():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(50):
         idx.insert([float(i), 0.0])
 

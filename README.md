@@ -1,9 +1,9 @@
 <div align="center">
-  <img src="assets/vivy.png" alt="Vivy" width="200" />
+  <img src="assets/vivvy.png" alt="Vivvy" width="200" />
   <br><br>
 
-  [![Crates.io](https://img.shields.io/crates/v/vivy-core?label=vivy-core)](https://crates.io/crates/vivy-core)
-  [![PyPI](https://img.shields.io/badge/pypi-vivy--vdb-blue)](https://pypi.org/project/vivy-vdb/)
+  [![Crates.io](https://img.shields.io/crates/v/vivvy-core?label=vivvy-core)](https://crates.io/crates/vivvy-core)
+  [![PyPI](https://img.shields.io/badge/pypi-vivvy--vdb-blue)](https://pypi.org/project/vivvy-vdb/)
   [![License](https://img.shields.io/badge/license-BSL--1.1-green)](LICENSE)
   [![Rust](https://img.shields.io/badge/rust-1.81%2B-orange)](https://www.rust-lang.org)
   [![HNSW](https://img.shields.io/badge/index-HNSW-8A2BE2)](#)
@@ -21,9 +21,9 @@ A local, durable long-term memory (LTM) runtime and single-machine vector engine
 
 | Crate / Package | Path | Responsibility |
 | :--- | :--- | :--- |
-| **`vivy-memory`** | [`ltm/`](ltm) | Durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable scoring & MMR diversity. |
-| **`vivy-core`** | [`vec/`](vec) | In-process vector engine: HNSW graph search, Roaring bitmap filters, 64-bit ID safety, atomic segment manifests & WAL. |
-| **`vivy-py`** | [`py/`](py) | PyO3 Python bindings exposing `vivy.MemoryStore` and low-level `vivy.Index` with GIL release. |
+| **`vivvy-memory`** | [`ltm/`](ltm) | Durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable scoring & MMR diversity. |
+| **`vivvy-core`** | [`vec/`](vec) | In-process vector engine: HNSW graph search, Roaring bitmap filters, 64-bit ID safety, atomic segment manifests & WAL. |
+| **`vivvy-py`** | [`py/`](py) | PyO3 Python bindings exposing `vivvy.MemoryStore` and low-level `vivvy.Index` with GIL release. |
 | **`bench`** | [`sim/`](sim) | Synthetic data benchmark suite for QPS, latency, and ground-truth recall verification. |
 
 ---
@@ -47,7 +47,7 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 
 ## Key Capabilities
 
-* **Durable Agent Memory (`vivy-memory`)**: SQLite WAL serves as canonical truth for memory records, revisions, and operation journal. Vector index acts as a derived, auto-rebuildable accelerator.
+* **Durable Agent Memory (`vivvy-memory`)**: SQLite WAL serves as canonical truth for memory records, revisions, and operation journal. Vector index acts as a derived, auto-rebuildable accelerator.
 * **Time-Window Temporal Filtering**: Filter candidate memories by temporal lower and upper bounds (`created_after_ms` & `created_before_ms`) at SQLite query entry and candidate evaluation.
 * **Strict Multi-Tenant Isolation**: Enforces tenant, namespace, agent, and user boundaries at API entry and SQL query level. Zero cross-tenant data leakage.
 * **Hybrid Candidate Recall**: Combines SQLite FTS5 lexical keyword matching with dense HNSW vector search using Reciprocal Rank Fusion (RRF).
@@ -56,7 +56,7 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 * **Zero-Copy NumPy & PyTorch Ingestion**: Direct PyO3 C-contiguous buffer protocol ingestion for `np.ndarray` float32 arrays with GIL release during search & inserts.
 * **Transparent Reranking & MMR**: 4-component weighted scoring (Similarity, Importance, Recency, Reinforcement) plus optional Maximal Marginal Relevance (MMR) deduplication.
 * **Security & Operations Primitives**: Encrypted storage interfaces (`KeyProvider`), telemetry redaction (`TelemetryRecord`), non-blocking health checks (`StoreHealth`), and resumable tombstone vacuuming (`vacuum_tombstones`).
-* **High Performance Vector Search (`vivy-core`)**: HNSW vector graph with non-blocking inserts and Roaring bitmap metadata filtering.
+* **High Performance Vector Search (`vivvy-core`)**: HNSW vector graph with non-blocking inserts and Roaring bitmap metadata filtering.
 
 ---
 
@@ -69,7 +69,7 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
                                 |
                                 v
 +-----------------------------------------------------------------+
-| vivy-memory (LTM Runtime Layer)                                 |
+| vivvy-memory (LTM Runtime Layer)                                |
 | - MemoryScope (tenant_id, namespace, agent_id, user_id)         |
 | - Operation Journal (idempotency, 2-phase state machine)        |
 | - Temporal Filtering (created_after_ms, created_before_ms)      |
@@ -79,7 +79,7 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
            |                                           |
            v                                           v
 +-----------------------------------+   +-------------------------+
-| SQLite (Canonical Store / WAL)    |   | vivy-core (Vector ANN)  |
+| SQLite (Canonical Store / WAL)    |   | vivvy-core (Vector ANN) |
 | - memories (Content, Provenance)  |   | - Rebuildable HNSW      |
 | - memories_fts (FTS5 Lexical)     |   | - Fast Cosine Retrieval |
 | - operations (Journal state)      |   | - Derived Accelerators  |
@@ -95,10 +95,10 @@ Refer to [**`Doc.md`**](Doc.md) for the complete, production-grade integration g
 ### Quick Example
 
 ```python
-import vivy
+import vivvy
 
 # Open durable long-term memory store
-store = vivy.MemoryStore.open(path="./agent_data", dimensions=3, embedding_model="test-model")
+store = vivvy.MemoryStore.open(path="./agent_data", dimensions=3, embedding_model="test-model")
 
 # Store observation into durable memory
 mem_id = store.remember(
@@ -147,11 +147,11 @@ cargo run --release --package bench
 
 ## Licensing & Commercial Terms
 
-**Vivy** components (`vivy-core`, `vivy-memory`, `vivy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
+**Vivvy** components (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
 
 ### Permitted Uses (BSL 1.1 Additional Use Grant)
 - **Non-Production & Evaluation**: Free use for development, testing, research, and evaluation.
-- **Production Workloads**: Free use in production for non-commercial applications, single-node deployments, and internal AI agent workloads, provided Vivy is not offered as a managed SaaS or cloud API vector service to third parties.
+- **Production Workloads**: Free use in production for non-commercial applications, single-node deployments, and internal AI agent workloads, provided Vivvy is not offered as a managed SaaS or cloud API vector service to third parties.
 
 ### Commercial Pro / Enterprise Licensing
 For managed cloud service providers or enterprise deployments requiring custom SLAs:

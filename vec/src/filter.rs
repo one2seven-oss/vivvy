@@ -27,7 +27,7 @@ pub enum FilterExpr {
     Not(Box<FilterExpr>),
 }
 
-// index[field][value] → RoaringTreemap. Wrapped in RwLock inside VivyIndex.
+// index[field][value] → RoaringTreemap. Wrapped in RwLock inside VivvyIndex.
 #[derive(Clone)]
 pub struct FilterIndex {
     index: HashMap<String, HashMap<String, RoaringTreemap>>,

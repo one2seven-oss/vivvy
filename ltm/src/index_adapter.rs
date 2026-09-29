@@ -3,8 +3,8 @@ use crate::model::MemoryRecord;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use vivy_core::concurrent::VivyIndex;
-use vivy_core::distance::Metric;
+use vivvy_core::concurrent::VivvyIndex;
+use vivvy_core::distance::Metric;
 
 /// Trait abstracting vector indexing operations for long-term memory retrieval.
 pub trait VectorIndex: Send + Sync {
@@ -46,11 +46,11 @@ pub trait VectorIndex: Send + Sync {
     }
 }
 
-/// Vivy-backed implementation of VectorIndex.
-pub struct VivyVectorIndex {
+/// Vivvy-backed implementation of VectorIndex.
+pub struct VivvyVectorIndex {
     dims: usize,
     metric: Metric,
-    index: RwLock<VivyIndex>,
+    index: RwLock<VivvyIndex>,
     // Bidirectional collision-safe ID mapping
     id_to_u64: RwLock<HashMap<String, u64>>,
     u64_to_id: RwLock<HashMap<u64, String>>,
@@ -58,7 +58,7 @@ pub struct VivyVectorIndex {
     next_u64: AtomicU64,
 }
 
-impl VivyVectorIndex {
+impl VivvyVectorIndex {
     pub fn new(dims: usize, metric: Metric) -> Result<Self> {
         Self::new_with_dir(dims, metric, Option::<&std::path::Path>::None)
     }
@@ -69,16 +69,16 @@ impl VivyVectorIndex {
         data_dir: Option<impl AsRef<std::path::Path>>,
     ) -> Result<Self> {
         let wal_path = data_dir.as_ref().map(|p| p.as_ref().join("index.wal"));
-        let vivy_idx = VivyIndex::new(dims, metric, wal_path, data_dir)
+        let vivvy_idx = VivvyIndex::new(dims, metric, wal_path, data_dir)
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
-                message: format!("Failed to create VivyIndex: {:?}", e),
+                message: format!("Failed to create VivvyIndex: {:?}", e),
             })?;
 
         Ok(Self {
             dims,
             metric,
-            index: RwLock::new(vivy_idx),
+            index: RwLock::new(vivvy_idx),
             id_to_u64: RwLock::new(HashMap::new()),
             u64_to_id: RwLock::new(HashMap::new()),
             tombstones: RwLock::new(HashMap::new()),
@@ -87,7 +87,7 @@ impl VivyVectorIndex {
     }
 }
 
-impl VectorIndex for VivyVectorIndex {
+impl VectorIndex for VivvyVectorIndex {
     fn upsert(&self, memory_id: &str, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dims {
             return Err(MemoryError::DimensionMismatch {
@@ -114,7 +114,7 @@ impl VectorIndex for VivyVectorIndex {
         idx.insert_with_id(num_id, vector.to_vec())
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
-                message: format!("VivyIndex insert failed: {:?}", e),
+                message: format!("VivvyIndex insert failed: {:?}", e),
             })?;
 
         Ok(())
@@ -158,7 +158,7 @@ impl VectorIndex for VivyVectorIndex {
             idx.insert_with_id(num_ids[i], vector.to_vec())
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
-                    message: format!("VivyIndex batch insert failed: {:?}", e),
+                    message: format!("VivvyIndex batch insert failed: {:?}", e),
                 })?;
         }
 
@@ -195,7 +195,7 @@ impl VectorIndex for VivyVectorIndex {
             idx.search(query, k_fetch)
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
-                    message: format!("VivyIndex search failed: {:?}", e),
+                    message: format!("VivvyIndex search failed: {:?}", e),
                 })?
         };
 
@@ -225,10 +225,10 @@ impl VectorIndex for VivyVectorIndex {
     }
 
     fn rebuild<'a>(&self, records: Box<dyn Iterator<Item = &'a MemoryRecord> + 'a>) -> Result<()> {
-        let new_idx = VivyIndex::new(self.dims, self.metric, None::<&str>, None::<&str>)
+        let new_idx = VivvyIndex::new(self.dims, self.metric, None::<&str>, None::<&str>)
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
-                message: format!("Failed to create new VivyIndex during rebuild: {:?}", e),
+                message: format!("Failed to create new VivvyIndex during rebuild: {:?}", e),
             })?;
 
         let mut new_id_map = HashMap::new();
@@ -325,7 +325,7 @@ impl VectorIndex for InMemoryTestIndex {
         let mut scored: Vec<(String, f32)> = map
             .iter()
             .map(|(id, vec)| {
-                let dist = vivy_core::distance::cosine(query, vec);
+                let dist = vivvy_core::distance::cosine(query, vec);
                 (id.clone(), dist)
             })
             .collect();
@@ -412,8 +412,8 @@ mod tests {
     }
 
     #[test]
-    fn test_vivy_vector_index() {
-        let index = Arc::new(VivyVectorIndex::new(3, Metric::Cosine).unwrap());
+    fn test_vivvy_vector_index() {
+        let index = Arc::new(VivvyVectorIndex::new(3, Metric::Cosine).unwrap());
         test_index_contract(index);
     }
 }

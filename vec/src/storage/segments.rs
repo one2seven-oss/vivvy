@@ -3,7 +3,7 @@ use memmap2::Mmap;
 use std::path::Path;
 use thiserror::Error;
 
-const MAGIC: [u8; 8] = *b"VIVYSEG\0";
+const MAGIC: [u8; 8] = *b"VIVVYSEG";
 const CURRENT_VERSION: u32 = 1;
 
 #[repr(C)]

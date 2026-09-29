@@ -1,15 +1,15 @@
 [package]
-name = "vivy-memory"
-version = "0.1.0"
+name = "vivvy-memory"
+version = "0.1.0-alpha"
 edition = "2021"
 license = "BUSL-1.1"
 description = "Local, durable, namespace-isolated long-term memory for AI agents"
-repository = "https://github.com/one2seven-oss/vivy"
-homepage = "https://github.com/one2seven-oss/vivy"
+repository = "https://github.com/one2seven-oss/vivvy"
+homepage = "https://github.com/one2seven-oss/vivvy"
 readme = "README.md"
 
 [dependencies]
-vivy-core = { version = "0.1.0", path = "../vec" }
+vivvy-core = { version = "0.1.0-alpha", path = "../vec" }
 rusqlite = { version = "0.32", features = ["bundled", "blob"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

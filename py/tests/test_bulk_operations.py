@@ -1,8 +1,8 @@
-import vivy
+import vivvy
 
 
 def test_bulk_insert_and_search():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(5000):
         idx.insert([float(i), float(5000 - i)])
 
@@ -12,7 +12,7 @@ def test_bulk_insert_and_search():
 
 
 def test_consecutive_searches():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     for i in range(1000):
         idx.insert([float(i), 0.0])
 
@@ -22,7 +22,7 @@ def test_consecutive_searches():
 
 
 def test_insert_returns_increasing_ids():
-    idx = vivy.Index(2, "l2")
+    idx = vivvy.Index(2, "l2")
     ids = []
     for i in range(100):
         _id = idx.insert([float(i), 0.0])

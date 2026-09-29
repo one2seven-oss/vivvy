@@ -1,4 +1,4 @@
-//! Python bindings (PyO3) for vivy.
+//! Python bindings (PyO3) for vivvy.
 //!
 //! Key decisions:
 //! - `allow_threads()` releases the GIL on every insert/search so Python
@@ -14,9 +14,9 @@ use numpy::PyReadonlyArray1;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use vivy_core::concurrent::VivyIndex;
-use vivy_core::distance::Metric;
-use vivy_core::filter::FilterExpr;
+use vivvy_core::concurrent::VivvyIndex;
+use vivvy_core::distance::Metric;
+use vivvy_core::filter::FilterExpr;
 
 enum PyVectorInput<'py> {
     List(Vec<f32>),
@@ -69,10 +69,10 @@ impl<'py> PyVectorInput<'py> {
     }
 }
 
-// Python-facing handle wrapping VivyIndex. Single opaque object with insert/search.
+// Python-facing handle wrapping VivvyIndex. Single opaque object with insert/search.
 #[pyclass]
 struct Index {
-    inner: VivyIndex,
+    inner: VivvyIndex,
 }
 
 #[pymethods]
@@ -85,7 +85,7 @@ impl Index {
             "dot" | "Dot" => Metric::Dot,
             other => return Err(PyValueError::new_err(format!("unknown metric: {other}"))),
         };
-        let inner = VivyIndex::new(dims, m, Option::<&str>::None, Option::<&str>::None)
+        let inner = VivvyIndex::new(dims, m, Option::<&str>::None, Option::<&str>::None)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }
@@ -245,8 +245,8 @@ fn parse_scope(
     namespace: &str,
     agent_id: Option<&str>,
     user_id: Option<&str>,
-) -> PyResult<vivy_memory::MemoryScope> {
-    let mut scope = vivy_memory::MemoryScope::new(tenant_id, namespace)
+) -> PyResult<vivvy_memory::MemoryScope> {
+    let mut scope = vivvy_memory::MemoryScope::new(tenant_id, namespace)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     if let Some(agent) = agent_id {
         scope = scope.with_agent(agent).map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -257,10 +257,10 @@ fn parse_scope(
     Ok(scope)
 }
 
-// Python facade for vivy_memory::MemoryStore
+// Python facade for vivvy_memory::MemoryStore
 #[pyclass(name = "MemoryStore")]
 struct PyMemoryStore {
-    inner: std::sync::Arc<vivy_memory::MemoryStore>,
+    inner: std::sync::Arc<vivvy_memory::MemoryStore>,
 }
 
 #[pymethods]
@@ -273,14 +273,14 @@ impl PyMemoryStore {
         embedding_model: &str,
         max_recall_limit: usize,
     ) -> PyResult<Self> {
-        let config = vivy_memory::MemoryConfig::builder(path)
+        let config = vivvy_memory::MemoryConfig::builder(path)
             .dimensions(dimensions)
             .embedding_model(embedding_model)
             .max_recall_limit(max_recall_limit)
             .build()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let store = vivy_memory::MemoryStore::open(config)
+        let store = vivvy_memory::MemoryStore::open(config)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
@@ -308,18 +308,18 @@ impl PyMemoryStore {
         let scope = parse_scope(tenant_id, namespace, agent_id, user_id)?;
 
         let m_kind = match kind.to_lowercase().as_str() {
-            "preference" => vivy_memory::MemoryKind::Preference,
-            "fact" => vivy_memory::MemoryKind::Fact,
-            "instruction" => vivy_memory::MemoryKind::Instruction,
-            "context" => vivy_memory::MemoryKind::Context,
-            _ => vivy_memory::MemoryKind::Episodic,
+            "preference" => vivvy_memory::MemoryKind::Preference,
+            "fact" => vivvy_memory::MemoryKind::Fact,
+            "instruction" => vivvy_memory::MemoryKind::Instruction,
+            "context" => vivvy_memory::MemoryKind::Context,
+            _ => vivvy_memory::MemoryKind::Episodic,
         };
 
         let vec_input = PyVectorInput::extract(&embedding)?;
         let vec_data = vec_input.into_vec()?;
         let meta_map = metadata.map(parse_py_dict_metadata).transpose()?.unwrap_or_default();
 
-        let req = vivy_memory::RememberRequest {
+        let req = vivvy_memory::RememberRequest {
             operation_id,
             scope,
             content: content.to_string(),
@@ -407,14 +407,14 @@ impl PyMemoryStore {
             let scope = parse_scope(&tenant_id, &namespace, agent_id.as_deref(), user_id.as_deref())?;
 
             let m_kind = match kind_str.as_deref().unwrap_or("fact").to_lowercase().as_str() {
-                "preference" => vivy_memory::MemoryKind::Preference,
-                "instruction" => vivy_memory::MemoryKind::Instruction,
-                "context" => vivy_memory::MemoryKind::Context,
-                "episodic" => vivy_memory::MemoryKind::Episodic,
-                _ => vivy_memory::MemoryKind::Fact,
+                "preference" => vivvy_memory::MemoryKind::Preference,
+                "instruction" => vivvy_memory::MemoryKind::Instruction,
+                "context" => vivvy_memory::MemoryKind::Context,
+                "episodic" => vivvy_memory::MemoryKind::Episodic,
+                _ => vivvy_memory::MemoryKind::Fact,
             };
 
-            rust_reqs.push(vivy_memory::RememberRequest {
+            rust_reqs.push(vivvy_memory::RememberRequest {
                 operation_id,
                 scope,
                 content,
@@ -458,14 +458,14 @@ impl PyMemoryStore {
         let vec_input = PyVectorInput::extract(&query_embedding)?;
         let query_vec = vec_input.into_vec()?;
 
-        let filters = vivy_memory::MemoryFilter {
+        let filters = vivvy_memory::MemoryFilter {
             metadata_eq: filter_metadata.map(parse_py_dict_metadata).transpose()?,
             created_after_ms,
             created_before_ms,
             ..Default::default()
         };
 
-        let req = vivy_memory::RecallRequest {
+        let req = vivvy_memory::RecallRequest {
             scope,
             query_embedding: query_vec,
             query_text,
@@ -516,14 +516,14 @@ impl PyMemoryStore {
         let vec_input = PyVectorInput::extract(&query_embedding)?;
         let query_vec = vec_input.into_vec()?;
 
-        let filters = vivy_memory::MemoryFilter {
+        let filters = vivvy_memory::MemoryFilter {
             metadata_eq: filter_metadata.map(parse_py_dict_metadata).transpose()?,
             created_after_ms,
             created_before_ms,
             ..Default::default()
         };
 
-        let req = vivy_memory::RecallRequest {
+        let req = vivvy_memory::RecallRequest {
             scope,
             query_embedding: query_vec,
             query_text,
@@ -533,8 +533,8 @@ impl PyMemoryStore {
             mmr_lambda: Some(0.5),
         };
 
-        let default_options = vivy_memory::ContextFormatOptions::default();
-        let options = vivy_memory::ContextFormatOptions {
+        let default_options = vivvy_memory::ContextFormatOptions::default();
+        let options = vivvy_memory::ContextFormatOptions {
             max_tokens,
             template: template.unwrap_or(default_options.template),
             header: header.or(default_options.header),
@@ -581,7 +581,7 @@ impl PyMemoryStore {
         })?;
 
         match record {
-            Some(rec) if rec.status == vivy_memory::MemoryStatus::Active => {
+            Some(rec) if rec.status == vivvy_memory::MemoryStatus::Active => {
                 let dict = PyDict::new(py);
                 dict.set_item("id", rec.id)?;
                 dict.set_item("tenant_id", rec.scope.tenant_id())?;
@@ -620,11 +620,11 @@ impl PyMemoryStore {
 
         let m_kind = match kind {
             Some(k) => match k.to_lowercase().as_str() {
-                "preference" => Some(vivy_memory::MemoryKind::Preference),
-                "fact" => Some(vivy_memory::MemoryKind::Fact),
-                "instruction" => Some(vivy_memory::MemoryKind::Instruction),
-                "context" => Some(vivy_memory::MemoryKind::Context),
-                _ => Some(vivy_memory::MemoryKind::Episodic),
+                "preference" => Some(vivvy_memory::MemoryKind::Preference),
+                "fact" => Some(vivvy_memory::MemoryKind::Fact),
+                "instruction" => Some(vivvy_memory::MemoryKind::Instruction),
+                "context" => Some(vivvy_memory::MemoryKind::Context),
+                _ => Some(vivvy_memory::MemoryKind::Episodic),
             },
             None => None,
         };
@@ -634,7 +634,7 @@ impl PyMemoryStore {
             None => None,
         };
 
-        let req = vivy_memory::UpdateRequest {
+        let req = vivvy_memory::UpdateRequest {
             operation_id,
             scope,
             id: id.to_string(),
@@ -663,9 +663,9 @@ impl PyMemoryStore {
         namespace: &str,
         id: &str,
     ) -> PyResult<()> {
-        let scope = vivy_memory::MemoryScope::new(tenant_id, namespace)
+        let scope = vivvy_memory::MemoryScope::new(tenant_id, namespace)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let req = vivy_memory::ForgetRequest::new(scope, id)
+        let req = vivvy_memory::ForgetRequest::new(scope, id)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let store = self.inner.clone();
@@ -684,7 +684,7 @@ impl PyMemoryStore {
         namespace: &str,
         ids: Vec<String>,
     ) -> PyResult<()> {
-        let scope = vivy_memory::MemoryScope::new(tenant_id, namespace)
+        let scope = vivvy_memory::MemoryScope::new(tenant_id, namespace)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
@@ -734,7 +734,7 @@ impl PyMemoryStore {
 }
 
 #[pymodule]
-fn vivy(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn vivvy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Index>()?;
     m.add_class::<PyMemoryStore>()?;
     Ok(())

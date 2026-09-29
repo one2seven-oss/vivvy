@@ -1,4 +1,4 @@
-use vivy_memory::*;
+use vivvy_memory::*;
 
 #[test]
 fn test_missing_key_provider_returns_encryption_key_unavailable() {
