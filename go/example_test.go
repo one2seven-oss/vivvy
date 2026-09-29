@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/one2seven-oss/vivvy-go"
+	"github.com/one2seven-oss/vivvy/go"
 )
 
 func openExampleStore(dims int) (*vivvy.Store, func()) {

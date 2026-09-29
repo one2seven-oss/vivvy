@@ -9,7 +9,7 @@ in-process, linked directly into your binary.
 ## Install
 
 ```sh
-go get github.com/one2seven-oss/vivvy-go
+go get github.com/one2seven-oss/vivvy/go
 ```
 
 `go build`/`go test` need the platform-matching static library present in
@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/one2seven-oss/vivvy-go"
+	"github.com/one2seven-oss/vivvy/go"
 )
 
 func main() {
