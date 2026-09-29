@@ -1,0 +1,18 @@
+# Force LF line endings on checkout regardless of the platform's git config.
+#
+# Without this, GitHub Actions' windows-latest runner (Git for Windows,
+# core.autocrlf=true by default) converts every checked-out .go file's LF
+# endings to CRLF, and `gofmt -l` then flags every one of them as
+# "unformatted" purely from the line-ending conversion — not from any real
+# formatting problem in the source. This is what breaks go-ffi.yml's gofmt
+# check step on that matrix leg specifically.
+* text=auto eol=lf
+
+# Binary assets: never touched by line-ending normalization.
+*.png binary
+*.jpeg binary
+*.jpg binary
+*.a binary
+*.so binary
+*.dylib binary
+*.dll binary
