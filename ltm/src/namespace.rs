@@ -48,18 +48,22 @@ impl MemoryScope {
         Ok(self)
     }
 
+    #[must_use]
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
     }
 
+    #[must_use]
     pub fn namespace(&self) -> &str {
         &self.namespace
     }
 
+    #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
         self.agent_id.as_deref()
     }
 
+    #[must_use]
     pub fn user_id(&self) -> Option<&str> {
         self.user_id.as_deref()
     }

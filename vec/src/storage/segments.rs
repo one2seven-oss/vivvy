@@ -60,17 +60,32 @@ pub struct SealedSegment {
 }
 
 impl SealedSegment {
+    /// Open a sealed segment from a file path.
+    ///
+    /// # Errors
+    /// Returns `SegmentError` if the file cannot be opened or if the format is invalid.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SegmentError> {
         let file = std::fs::File::open(path.as_ref())?;
+        // SAFETY: File is opened in read-only mode and exclusively mapped for read access.
         let mmap = unsafe { Mmap::map(&file)? };
         Self::from_mmap(mmap)
     }
 
+    /// Open a sealed segment from an open file handle.
+    ///
+    /// # Errors
+    /// Returns `SegmentError` if mapping or validation fails.
     pub fn from_file(file: std::fs::File) -> Result<Self, SegmentError> {
+        // SAFETY: File descriptor is valid and exclusively mapped for read access.
         let mmap = unsafe { Mmap::map(&file)? };
         Self::from_mmap(mmap)
     }
 
+    /// Construct a sealed segment from an existing memory map.
+    ///
+    /// # Errors
+    /// Returns `SegmentError::Truncated`, `SegmentError::BadMagic`, or `SegmentError::UnsupportedVersion`
+    /// if the header or layout invariants are violated.
     pub fn from_mmap(mmap: Mmap) -> Result<Self, SegmentError> {
         if mmap.len() < size_of::<Header>() {
             return Err(SegmentError::Truncated);
@@ -120,14 +135,17 @@ impl SealedSegment {
         })
     }
 
+    #[must_use]
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }
 
+    #[must_use]
     pub fn dims(&self) -> usize {
         self.dims
     }
 
+    #[must_use]
     pub fn pq_enabled(&self) -> bool {
         self.pq_enabled
     }
@@ -137,10 +155,16 @@ impl SealedSegment {
             return Err(SegmentError::Truncated);
         }
         let off = self.offset_table_off + idx * size_of::<u64>();
-        let rel = u64::from_le_bytes(self.mmap[off..off + 8].try_into().unwrap());
+        if off + 8 > self.mmap.len() {
+            return Err(SegmentError::Truncated);
+        }
+        let slice = &self.mmap[off..off + 8];
+        let bytes: [u8; 8] = slice.try_into().map_err(|_| SegmentError::Truncated)?;
+        let rel = u64::from_le_bytes(bytes);
         Ok(self.data_off + rel as usize)
     }
 
+    #[must_use]
     pub fn codebook(&self) -> Option<&[f32]> {
         if !self.has_codebook {
             return None;
@@ -156,34 +180,46 @@ impl SealedSegment {
         let buf = &self.mmap[start..];
         let mut pos = 0usize;
 
-        let read_u32 = |p: &mut usize, b: &[u8]| -> u32 {
-            let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+        let read_u32 = |p: &mut usize, b: &[u8]| -> Result<u32, SegmentError> {
+            if *p + 4 > b.len() {
+                return Err(SegmentError::Truncated);
+            }
+            let slice: [u8; 4] = b[*p..*p + 4].try_into().map_err(|_| SegmentError::Truncated)?;
             *p += 4;
-            v
+            Ok(u32::from_le_bytes(slice))
         };
-        let read_u64 = |p: &mut usize, b: &[u8]| -> u64 {
-            let v = u64::from_le_bytes(b[*p..*p + 8].try_into().unwrap());
+        let read_u64 = |p: &mut usize, b: &[u8]| -> Result<u64, SegmentError> {
+            if *p + 8 > b.len() {
+                return Err(SegmentError::Truncated);
+            }
+            let slice: [u8; 8] = b[*p..*p + 8].try_into().map_err(|_| SegmentError::Truncated)?;
             *p += 8;
-            v
+            Ok(u64::from_le_bytes(slice))
         };
 
-        let id = read_u64(&mut pos, buf);
-        let level = read_u32(&mut pos, buf) as usize;
+        let id = read_u64(&mut pos, buf)?;
+        let level = read_u32(&mut pos, buf)? as usize;
 
         let mut neighbors = Vec::with_capacity(level + 1);
         for _ in 0..=level {
-            let n = read_u32(&mut pos, buf) as usize;
+            let n = read_u32(&mut pos, buf)? as usize;
             let mut layer = Vec::with_capacity(n);
             for _ in 0..n {
-                layer.push(read_u32(&mut pos, buf));
+                layer.push(read_u32(&mut pos, buf)?);
             }
             neighbors.push(layer);
         }
 
         let (pq_code, vector) = if self.pq_enabled {
+            if pos + self.pq_subvectors > buf.len() {
+                return Err(SegmentError::Truncated);
+            }
             let code = buf[pos..pos + self.pq_subvectors].to_vec();
             (Some(code), None)
         } else {
+            if pos + self.dims * 4 > buf.len() {
+                return Err(SegmentError::Truncated);
+            }
             let v: Vec<f32> = bytemuck::cast_slice(&buf[pos..pos + self.dims * 4]).to_vec();
             (None, Some(v))
         };
@@ -200,11 +236,22 @@ impl SealedSegment {
     pub fn read_pq_code(&self, idx: usize) -> Result<&[u8], SegmentError> {
         let start = self.offset_of(idx)?;
         let buf = &self.mmap[start..];
-        let level = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+        if buf.len() < 12 {
+            return Err(SegmentError::Truncated);
+        }
+        let level_slice: [u8; 4] = buf[8..12].try_into().map_err(|_| SegmentError::Truncated)?;
+        let level = u32::from_le_bytes(level_slice) as usize;
         let mut pos = 12usize;
         for _ in 0..=level {
-            let n_neigh = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+            if pos + 4 > buf.len() {
+                return Err(SegmentError::Truncated);
+            }
+            let n_slice: [u8; 4] = buf[pos..pos + 4].try_into().map_err(|_| SegmentError::Truncated)?;
+            let n_neigh = u32::from_le_bytes(n_slice) as usize;
             pos += 4 + n_neigh * 4;
+        }
+        if pos + self.pq_subvectors > buf.len() {
+            return Err(SegmentError::Truncated);
         }
         Ok(&buf[pos..pos + self.pq_subvectors])
     }
@@ -214,7 +261,8 @@ impl SealedSegment {
         if start + 8 > self.mmap.len() {
             return Err(SegmentError::Truncated);
         }
-        let id = u64::from_le_bytes(self.mmap[start..start + 8].try_into().unwrap());
+        let bytes: [u8; 8] = self.mmap[start..start + 8].try_into().map_err(|_| SegmentError::Truncated)?;
+        let id = u64::from_le_bytes(bytes);
         Ok(id)
     }
 
@@ -224,13 +272,15 @@ impl SealedSegment {
         if buf.len() < 12 {
             return Err(SegmentError::Truncated);
         }
-        let level = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+        let level_slice: [u8; 4] = buf[8..12].try_into().map_err(|_| SegmentError::Truncated)?;
+        let level = u32::from_le_bytes(level_slice) as usize;
         let mut pos = 12usize;
         for _ in 0..=level {
             if pos + 4 > buf.len() {
                 return Err(SegmentError::Truncated);
             }
-            let n_neigh = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+            let n_slice: [u8; 4] = buf[pos..pos + 4].try_into().map_err(|_| SegmentError::Truncated)?;
+            let n_neigh = u32::from_le_bytes(n_slice) as usize;
             pos += 4;
             if pos + n_neigh * 4 > buf.len() {
                 return Err(SegmentError::Truncated);

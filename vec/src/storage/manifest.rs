@@ -22,10 +22,12 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    #[must_use]
     pub fn new(segments: Vec<String>) -> Self {
         Self { segments }
     }
 
+    #[must_use]
     pub fn manifest_path(dir: impl AsRef<Path>) -> PathBuf {
         dir.as_ref().join("manifest.idx")
     }

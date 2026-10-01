@@ -140,6 +140,7 @@ pub struct ExplanationJson {
 
 /// Maps a free-form kind string onto `MemoryKind`. Unrecognized or absent
 /// values default to `Fact`, matching `InsertRecordJson`'s default.
+#[must_use]
 pub fn parse_kind(s: &str) -> MemoryKind {
     match s.to_lowercase().as_str() {
         "preference" => MemoryKind::Preference,
@@ -150,6 +151,7 @@ pub fn parse_kind(s: &str) -> MemoryKind {
     }
 }
 
+#[must_use]
 pub fn kind_to_str(k: MemoryKind) -> &'static str {
     match k {
         MemoryKind::Fact => "fact",

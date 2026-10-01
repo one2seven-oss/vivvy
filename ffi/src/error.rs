@@ -47,6 +47,7 @@ pub enum FfiError {
 }
 
 impl FfiError {
+    #[must_use]
     pub fn code(&self) -> i32 {
         match self {
             FfiError::NullPointer(_) => ERR_NULL_POINTER,
@@ -72,6 +73,7 @@ impl FfiError {
         }
     }
 
+    #[must_use]
     pub fn message(&self) -> String {
         match self {
             FfiError::NullPointer(field) => {
@@ -116,6 +118,7 @@ pub fn set_last_error(msg: impl Into<String>) {
 /// string if none has been set. The returned pointer is borrowed: it is
 /// valid until the next `vivvy_*` call made on this thread and must never
 /// be freed by the caller.
+#[must_use]
 pub fn last_error_ptr() -> *const c_char {
     thread_local! {
         static EMPTY: CString = CString::new("").unwrap();

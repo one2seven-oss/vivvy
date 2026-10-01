@@ -68,6 +68,7 @@ impl MemoryStore {
     }
 
     /// Access the store's immutable configuration.
+    #[must_use]
     pub fn config(&self) -> &MemoryConfig {
         &self.config
     }
@@ -199,12 +200,10 @@ impl MemoryStore {
         }
 
         let mut unique_candidate_ids: Vec<String> = rrf_scores.keys().cloned().collect();
-        unique_candidate_ids.sort_by(|a, b| {
-            rrf_scores
-                .get(b)
-                .unwrap()
-                .partial_cmp(rrf_scores.get(a).unwrap())
-                .unwrap()
+        unique_candidate_ids.sort_unstable_by(|a, b| {
+            let score_a = rrf_scores.get(a).copied().unwrap_or(0.0);
+            let score_b = rrf_scores.get(b).copied().unwrap_or(0.0);
+            score_b.total_cmp(&score_a)
         });
 
         let mut items = Vec::new();
@@ -352,7 +351,7 @@ impl MemoryStore {
             })
         } else {
             // Sort items by total score descending
-            items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            items.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
             items.truncate(req.limit);
 
             Ok(RecallResponse {

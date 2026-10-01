@@ -19,9 +19,10 @@
 
 use crate::distance::{self, Metric};
 use ordered_float::OrderedFloat;
+use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HnswIndex {
     // Vectors + IDs by internal node index (0..len-1).
     vectors: Vec<f32>,
@@ -44,7 +45,7 @@ pub struct HnswIndex {
 }
 
 // ef-search priority-queue element. OrderedFloat so f32 can be Ord.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Candidate {
     dist: OrderedFloat<f32>,
     idx: usize,
@@ -65,6 +66,7 @@ impl PartialOrd for Candidate {
 }
 
 impl HnswIndex {
+    #[must_use]
     pub fn new(dims: usize, metric: Metric) -> Self {
         // Paper defaults: M=16, ef_construction=200, ml=1/ln(M)≈0.36.
         let m = 16;
@@ -84,10 +86,12 @@ impl HnswIndex {
         }
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.ids.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
@@ -164,8 +168,8 @@ impl HnswIndex {
     }
 
     // Core HNSW search primitive at one layer.
-    // Min-heap of candidates to explore, max-heap of best ef results.
-    // Stop when the closest candidate is farther than the ef-th result
+    // Min-heap of candidates to explore (Reverse<Candidate>), max-heap of best ef results (Candidate).
+    // Stop when the closest candidate is farther than the furthest result in results
     // (triangle inequality guarantees no unexplored node can beat it).
     // ef controls speed-recall: insertion uses ef_construction (200),
     // search starts at k.max(100) and expands dynamically under filter.
@@ -175,10 +179,10 @@ impl HnswIndex {
         let ed = distance::compute(self.metric, query, &self.vectors[entry * self.dims..(entry + 1) * self.dims]);
 
         let mut candidates = BinaryHeap::new();
-        candidates.push(Candidate {
+        candidates.push(Reverse(Candidate {
             dist: OrderedFloat(ed),
             idx: entry,
-        });
+        }));
 
         let mut results = BinaryHeap::new();
         results.push(Candidate {
@@ -186,7 +190,7 @@ impl HnswIndex {
             idx: entry,
         });
 
-        while let Some(c) = candidates.pop() {
+        while let Some(Reverse(c)) = candidates.pop() {
             let furthest = results.peek().unwrap().dist;
             if c.dist > furthest {
                 break;
@@ -198,7 +202,7 @@ impl HnswIndex {
                         let of = OrderedFloat(d);
                         let furthest = results.peek().unwrap().dist;
                         if of < furthest || results.len() < ef {
-                            candidates.push(Candidate { dist: of, idx: n });
+                            candidates.push(Reverse(Candidate { dist: of, idx: n }));
                             results.push(Candidate { dist: of, idx: n });
                             if results.len() > ef {
                                 results.pop();
@@ -228,15 +232,17 @@ impl HnswIndex {
                 )
             })
             .collect();
-        v.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        v.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         v.truncate(self.m_max);
         v.into_iter().map(|(i, _)| i).collect()
     }
 
+    #[must_use]
     pub fn metric(&self) -> Metric {
         self.metric
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> Vec<(u64, Vec<f32>)> {
         self.ids
             .iter()
@@ -263,6 +269,7 @@ impl HnswIndex {
     }
 
     // Unfiltered search — delegates to search_filtered with no filter.
+    #[must_use]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
         self.search_filtered(query, k, None)
     }
@@ -271,6 +278,7 @@ impl HnswIndex {
     // filter, double ef (up to 1000) and retry. This avoids the worst case
     // (re-search with max ef from scratch) and the naive approach (always
     // use max ef, slow for broad filters).
+    #[must_use]
     pub fn search_filtered(
         &self,
         query: &[f32],
@@ -314,7 +322,7 @@ impl HnswIndex {
 // Select the n closest (index, distance) pairs. Used during insertion.
 fn closest_n(candidates: &[(usize, f32)], n: usize) -> Vec<usize> {
     let mut sorted = candidates.to_vec();
-    sorted.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     sorted.truncate(n);
     sorted.into_iter().map(|(i, _)| i).collect()
 }

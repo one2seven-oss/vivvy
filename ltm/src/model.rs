@@ -25,6 +25,7 @@ pub enum MemoryStatus {
 }
 
 impl MemoryStatus {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -34,6 +35,7 @@ impl MemoryStatus {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
@@ -114,10 +116,12 @@ pub struct MemoryFilter {
 }
 
 impl MemoryFilter {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn kind_in(kinds: impl IntoIterator<Item = MemoryKind>) -> Self {
         Self {
             kinds: Some(kinds.into_iter().collect()),
@@ -128,11 +132,13 @@ impl MemoryFilter {
         }
     }
 
+    #[must_use]
     pub fn with_min_importance(mut self, min_importance: f32) -> Self {
         self.min_importance = Some(min_importance);
         self
     }
 
+    #[must_use]
     pub fn with_metadata_eq(mut self, key: impl Into<String>, val: impl Into<serde_json::Value>) -> Self {
         let mut map = self.metadata_eq.unwrap_or_default();
         map.insert(key.into(), val.into());
@@ -140,6 +146,7 @@ impl MemoryFilter {
         self
     }
 
+    #[must_use]
     pub fn with_time_range(mut self, after_ms: Option<i64>, before_ms: Option<i64>) -> Self {
         self.created_after_ms = after_ms;
         self.created_before_ms = before_ms;

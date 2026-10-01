@@ -11,22 +11,27 @@ pub struct MemoryConfig {
 }
 
 impl MemoryConfig {
+    #[must_use]
     pub fn builder(path: impl AsRef<Path>) -> MemoryConfigBuilder {
         MemoryConfigBuilder::new(path)
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[must_use]
     pub fn dimensions(&self) -> usize {
         self.dimensions
     }
 
+    #[must_use]
     pub fn embedding_model(&self) -> &str {
         &self.embedding_model
     }
 
+    #[must_use]
     pub fn max_recall_limit(&self) -> usize {
         self.max_recall_limit
     }
@@ -40,6 +45,7 @@ pub struct MemoryConfigBuilder {
 }
 
 impl MemoryConfigBuilder {
+    #[must_use]
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
@@ -49,16 +55,19 @@ impl MemoryConfigBuilder {
         }
     }
 
+    #[must_use]
     pub fn dimensions(mut self, dims: usize) -> Self {
         self.dimensions = Some(dims);
         self
     }
 
+    #[must_use]
     pub fn embedding_model(mut self, model: impl Into<String>) -> Self {
         self.embedding_model = Some(model.into());
         self
     }
 
+    #[must_use]
     pub fn max_recall_limit(mut self, limit: usize) -> Self {
         self.max_recall_limit = limit;
         self

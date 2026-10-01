@@ -18,6 +18,7 @@ pub struct TelemetryRecord {
 }
 
 impl TelemetryRecord {
+    #[must_use]
     pub fn new(
         tenant_id: impl Into<String>,
         namespace: impl Into<String>,
@@ -36,22 +37,26 @@ impl TelemetryRecord {
         }
     }
 
+    #[must_use]
     pub fn with_operation_id(mut self, op_id: Option<String>) -> Self {
         self.operation_id = op_id;
         self
     }
 
+    #[must_use]
     pub fn with_duration_us(mut self, duration_us: u64) -> Self {
         self.duration_us = duration_us;
         self
     }
 
+    #[must_use]
     pub fn with_outcome(mut self, success: bool, error_code: Option<String>) -> Self {
         self.success = success;
         self.error_code = error_code;
         self
     }
 
+    #[must_use]
     pub fn with_metrics(mut self, records_count: usize, bytes_processed: usize) -> Self {
         self.records_count = records_count;
         self.bytes_processed = bytes_processed;

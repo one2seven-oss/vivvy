@@ -20,13 +20,16 @@
 //! (LLVM unrolls and uses SSE/AVX for obvious reductions), so the gap is
 //! 2-4x, not 10x. We close it when it shows up as a p99 driver.
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Metric {
+    #[default]
     L2,
     Cosine,
     Dot,
 }
 
+#[must_use]
+#[inline]
 pub fn compute(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
     match metric {
         Metric::L2 => l2_squared(a, b),
@@ -37,19 +40,22 @@ pub fn compute(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
 
 // Σ (aᵢ − bᵢ)² — squared Euclidean, no sqrt (monotonic, saves one sqrt per cmp).
 // Call sqrt() at the application layer if you need true Euclidean.
+#[must_use]
 #[inline]
 pub fn l2_squared(a: &[f32], b: &[f32]) -> f32 {
-    let mut sum = 0.0f32;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        let d = x - y;
-        sum += d * d;
-    }
-    sum
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum()
 }
 
 // 1 − cos(θ) = 1 − (a·b) / (|a|·|b|).
 // Returns 1 − similarity so that 0 = identical direction, 1 = orthogonal, 2 = opposite.
 // Denominator clamped at f32::EPSILON for the zero-vector edge case.
+#[must_use]
 #[inline]
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let mut dot = 0.0f32;
@@ -60,19 +66,17 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         na += x * x;
         nb += y * y;
     }
-    1.0 - dot / (na.sqrt() * nb.sqrt()).max(f32::EPSILON)
+    let denom = (na * nb).sqrt().max(f32::EPSILON);
+    1.0 - (dot / denom)
 }
 
 // −(a·b). For unit-normalised vectors this equals cosine distance without
 // the norm computation. Smaller = closer, so MIP becomes min-negated-dot.
 // Caller must match metric to their embedding model.
+#[must_use]
 #[inline]
 pub fn neg_dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut dot = 0.0f32;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-    }
-    -dot
+    -a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum::<f32>()
 }
 
 #[cfg(test)]

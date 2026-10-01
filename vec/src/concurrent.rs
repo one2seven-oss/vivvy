@@ -330,7 +330,7 @@ impl VivvyIndex {
             }
         }
 
-        results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
         Ok(results)
     }
@@ -362,15 +362,17 @@ impl VivvyIndex {
             }
         }
 
-        results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
         Ok(results)
     }
 
+    #[must_use]
     pub fn delta_len(&self) -> usize {
         self.shards.iter().map(|s| s.read().len()).sum()
     }
 
+    #[must_use]
     pub fn num_sealed(&self) -> usize {
         self.sealed.load().len()
     }

@@ -284,6 +284,7 @@ pub struct InMemoryTestIndex {
 }
 
 impl InMemoryTestIndex {
+    #[must_use]
     pub fn new(dims: usize) -> Self {
         Self {
             dims,
@@ -330,7 +331,7 @@ impl VectorIndex for InMemoryTestIndex {
             })
             .collect();
 
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         scored.truncate(limit);
         Ok(scored)
     }

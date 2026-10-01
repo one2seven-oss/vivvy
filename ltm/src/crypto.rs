@@ -25,12 +25,14 @@ pub struct NoOpDevKeyProvider {
 }
 
 impl NoOpDevKeyProvider {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             dev_key: vec![0x42; 32],
         }
     }
 
+    #[must_use]
     pub fn with_custom_key(key: Vec<u8>) -> Self {
         Self { dev_key: key }
     }

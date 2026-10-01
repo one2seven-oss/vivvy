@@ -7,6 +7,7 @@
 
 use crate::distance::{self, Metric};
 
+#[derive(Debug, Clone)]
 pub struct FlatIndex {
     vectors: Vec<Vec<f32>>,
     ids: Vec<u64>,
@@ -14,6 +15,7 @@ pub struct FlatIndex {
 }
 
 impl FlatIndex {
+    #[must_use]
     pub fn new(metric: Metric) -> Self {
         Self {
             vectors: Vec::new(),
@@ -28,15 +30,18 @@ impl FlatIndex {
         self.vectors.push(vector);
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.ids.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 
     // Full scan: distance to every stored vector, sort, return top-k.
+    #[must_use]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
         let mut results: Vec<(u64, f32)> = self
             .vectors
@@ -44,12 +49,13 @@ impl FlatIndex {
             .zip(self.ids.iter())
             .map(|(v, &id)| (id, distance::compute(self.metric, v, query)))
             .collect();
-        results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
         results
     }
 
     // Exact distance to a single stored vector by id. Useful for unit tests.
+    #[must_use]
     pub fn distance_to(&self, id: u64, query: &[f32]) -> Option<f32> {
         self.vectors
             .get(self.ids.iter().position(|&x| x == id)?)
