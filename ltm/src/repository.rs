@@ -1042,12 +1042,12 @@ impl Repository {
             message: format!("Failed to begin delete transaction: {}", e),
         })?;
 
-        tx.execute(
+        let rows_affected = tx.execute(
             r#"
             UPDATE memories SET
                 status = 'deleted',
                 updated_at_ms = ?
-            WHERE id = ? AND tenant_id = ? AND namespace = ?
+            WHERE id = ? AND tenant_id = ? AND namespace = ? AND status != 'deleted'
             "#,
             params![now_ms, id, scope.tenant_id(), scope.namespace()],
         )
@@ -1055,6 +1055,10 @@ impl Repository {
             code: ErrorCode::DatabaseError,
             message: format!("Failed to tombstone memory: {}", e),
         })?;
+
+        if rows_affected == 0 {
+            return Err(MemoryError::not_found(id));
+        }
 
         if let Some(op_id) = operation_id {
             tx.execute(
@@ -1102,7 +1106,7 @@ impl Repository {
                 UPDATE memories SET
                     status = 'deleted',
                     updated_at_ms = ?
-                WHERE id = ? AND tenant_id = ? AND namespace = ?
+                WHERE id = ? AND tenant_id = ? AND namespace = ? AND status != 'deleted'
                 "#,
             ).map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
@@ -1121,11 +1125,15 @@ impl Repository {
             })?;
 
             for (i, id) in ids.iter().enumerate() {
-                del_stmt.execute(params![now_ms, id, scope.tenant_id(), scope.namespace()])
+                let rows = del_stmt.execute(params![now_ms, id, scope.tenant_id(), scope.namespace()])
                     .map_err(|e| MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
                         message: format!("Failed to tombstone memory in batch: {}", e),
                     })?;
+
+                if rows == 0 {
+                    return Err(MemoryError::not_found(*id));
+                }
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
                     op_stmt.execute(params![op_id, id, "delete", "{}", "applied", now_ms, now_ms])
