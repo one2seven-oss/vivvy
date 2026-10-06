@@ -80,6 +80,29 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 END;
 "#;
 
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS operations_v3 (
+    tenant_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    applied_at_ms INTEGER,
+    PRIMARY KEY (tenant_id, namespace, operation_id)
+);
+
+INSERT OR IGNORE INTO operations_v3
+SELECT m.tenant_id, m.namespace, o.operation_id, o.memory_id, o.kind, o.payload_json, o.state, o.created_at_ms, o.applied_at_ms
+FROM operations o
+JOIN memories m ON o.memory_id = m.id;
+
+DROP TABLE operations;
+ALTER TABLE operations_v3 RENAME TO operations;
+"#;
+
 fn sanitize_fts_query(input: &str) -> String {
     let clean: String = input
         .chars()
@@ -237,6 +260,22 @@ impl Repository {
             })?;
         }
 
+        if current_ver < 3 {
+            tx.execute_batch(SCHEMA_V3)
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to apply schema v3: {}", e),
+                })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (3, ?)",
+                params![now],
+            )
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to record schema v3 migration: {}", e),
+            })?;
+        }
+
         tx.commit().map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
             message: format!("Failed to commit migration transaction: {}", e),
@@ -330,10 +369,12 @@ impl Repository {
             tx.execute(
                 r#"
                 INSERT INTO operations (
-                    operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    tenant_id, namespace, operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 "#,
                 params![
+                    record.scope.tenant_id(),
+                    record.scope.namespace(),
                     op_id,
                     record.id,
                     "remember",
@@ -395,8 +436,8 @@ impl Repository {
             let mut op_stmt = tx.prepare(
                 r#"
                 INSERT INTO operations (
-                    operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    tenant_id, namespace, operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 "#,
             ).map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
@@ -441,6 +482,8 @@ impl Repository {
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
                     op_stmt.execute(params![
+                        record.scope.tenant_id(),
+                        record.scope.namespace(),
                         op_id,
                         record.id,
                         "remember",
@@ -617,27 +660,27 @@ impl Repository {
         Ok(())
     }
 
-    pub fn get_memory_id_by_operation_id(&self, op_id: &str) -> Result<Option<String>> {
+    pub fn get_operation(&self, scope: &MemoryScope, op_id: &str) -> Result<Option<(String, String)>> {
         let conn = self.conn.lock();
-        let mem_id = conn
+        let result = conn
             .query_row(
-                "SELECT memory_id FROM operations WHERE operation_id = ?",
-                params![op_id],
-                |row| row.get(0),
+                "SELECT memory_id, payload_json FROM operations WHERE tenant_id = ? AND namespace = ? AND operation_id = ?",
+                params![scope.tenant_id(), scope.namespace(), op_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
                 message: format!("Failed to query operation: {}", e),
             })?;
-        Ok(mem_id)
+        Ok(result)
     }
 
-    pub fn mark_operation_applied(&self, op_id: &str, applied_at_ms: i64) -> Result<()> {
+    pub fn mark_operation_applied(&self, scope: &MemoryScope, op_id: &str, applied_at_ms: i64) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
-            "UPDATE operations SET state = 'applied', applied_at_ms = ? WHERE operation_id = ?",
-            params![applied_at_ms, op_id],
+            "UPDATE operations SET state = 'applied', applied_at_ms = ? WHERE tenant_id = ? AND namespace = ? AND operation_id = ?",
+            params![applied_at_ms, scope.tenant_id(), scope.namespace(), op_id],
         )
         .map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
@@ -646,8 +689,8 @@ impl Repository {
         Ok(())
     }
 
-    pub fn mark_operation_applied_batch(&self, op_ids: &[&str], applied_at_ms: i64) -> Result<()> {
-        if op_ids.is_empty() {
+    pub fn mark_operation_applied_batch(&self, ops: &[(&MemoryScope, &str)], applied_at_ms: i64) -> Result<()> {
+        if ops.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock();
@@ -657,14 +700,14 @@ impl Repository {
         })?;
 
         {
-            let mut stmt = tx.prepare("UPDATE operations SET state = 'applied', applied_at_ms = ? WHERE operation_id = ?")
+            let mut stmt = tx.prepare("UPDATE operations SET state = 'applied', applied_at_ms = ? WHERE tenant_id = ? AND namespace = ? AND operation_id = ?")
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to prepare mark_operation_applied_batch statement: {}", e),
                 })?;
 
-            for op_id in op_ids {
-                stmt.execute(params![applied_at_ms, op_id])
+            for (scope, op_id) in ops {
+                stmt.execute(params![applied_at_ms, scope.tenant_id(), scope.namespace(), op_id])
                     .map_err(|e| MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
                         message: format!("Failed to mark operation applied in batch: {}", e),
@@ -1003,10 +1046,12 @@ impl Repository {
             tx.execute(
                 r#"
                 INSERT INTO operations (
-                    operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    tenant_id, namespace, operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 "#,
                 params![
+                    record.scope.tenant_id(),
+                    record.scope.namespace(),
                     op_id,
                     record.id,
                     "update",
@@ -1064,10 +1109,10 @@ impl Repository {
             tx.execute(
                 r#"
                 INSERT INTO operations (
-                    operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    tenant_id, namespace, operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
-                params![op_id, id, "delete", "{}", "applied", now_ms, now_ms],
+                params![scope.tenant_id(), scope.namespace(), op_id, id, "delete", "{}", "applied", now_ms, now_ms],
             )
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
@@ -1116,8 +1161,8 @@ impl Repository {
             let mut op_stmt = tx.prepare(
                 r#"
                 INSERT INTO operations (
-                    operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    tenant_id, namespace, operation_id, memory_id, kind, payload_json, state, created_at_ms, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             ).map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
@@ -1136,7 +1181,7 @@ impl Repository {
                 }
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
-                    op_stmt.execute(params![op_id, id, "delete", "{}", "applied", now_ms, now_ms])
+                    op_stmt.execute(params![scope.tenant_id(), scope.namespace(), op_id, id, "delete", "{}", "applied", now_ms, now_ms])
                         .map_err(|e| MemoryError::DatabaseError {
                             code: ErrorCode::DatabaseError,
                             message: format!("Failed to insert delete operation in batch: {}", e),
