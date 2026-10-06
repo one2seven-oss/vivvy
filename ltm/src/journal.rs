@@ -168,10 +168,11 @@ impl JournalCoordinator {
             .as_millis() as i64;
 
         if let Some(ref op_id) = operation_id {
-            if let Some(_) = self.repo.get_operation(scope, op_id)? {
+            if self.repo.get_operation(scope, op_id)?.is_some() {
                 return Ok(());
             }
         }
+        
 
         self.repo
             .delete_memory(scope, id, operation_id.as_deref(), now_ms)?;
