@@ -46,14 +46,24 @@ impl MemoryStore {
             })?;
         }
 
+        // Clean up stale index files from previous ephemeral index versions
+        // (best-effort; ignore if files don't exist)
+        let _ = std::fs::remove_file(path.join("index.wal"));
+        let _ = std::fs::remove_file(path.join("index.manifest"));
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.ends_with(".vivvy") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+
         let db_path = path.join("memory.db");
         let repo = Arc::new(Repository::open(db_path)?);
 
-        let index = Arc::new(VivvyVectorIndex::new_with_dir(
-            config.dimensions(),
-            Metric::Cosine,
-            Some(config.path()),
-        )?);
+        let index = Arc::new(VivvyVectorIndex::new(config.dimensions(), Metric::Cosine)?);
         let coordinator = JournalCoordinator::new(repo.clone(), index.clone());
 
         // Run crash recovery / journal replay
@@ -532,6 +542,7 @@ impl MemoryStore {
     }
 
     /// Create a zero-downtime, fully consistent backup of the memory store at `target_dir`.
+    /// Backs up the SQLite database; the vector index is ephemeral and will be rebuilt on restore.
     pub fn backup(&self, target_dir: impl AsRef<std::path::Path>) -> Result<()> {
         let target = target_dir.as_ref();
         if !target.exists() {
@@ -549,11 +560,8 @@ impl MemoryStore {
             })?;
         }
 
-        // 1. Perform SQLite online backup via VACUUM INTO
+        // Perform SQLite online backup via VACUUM INTO (the canonical store)
         self.repo.backup_sqlite(&target_db)?;
-
-        // 2. Perform vector index segment backup
-        self.index.backup_segments(target)?;
 
         Ok(())
     }

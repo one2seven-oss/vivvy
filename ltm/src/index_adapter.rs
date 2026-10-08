@@ -60,16 +60,7 @@ pub struct VivvyVectorIndex {
 
 impl VivvyVectorIndex {
     pub fn new(dims: usize, metric: Metric) -> Result<Self> {
-        Self::new_with_dir(dims, metric, Option::<&std::path::Path>::None)
-    }
-
-    pub fn new_with_dir(
-        dims: usize,
-        metric: Metric,
-        data_dir: Option<impl AsRef<std::path::Path>>,
-    ) -> Result<Self> {
-        let wal_path = data_dir.as_ref().map(|p| p.as_ref().join("index.wal"));
-        let vivvy_idx = VivvyIndex::new(dims, metric, wal_path, data_dir)
+        let vivvy_idx = VivvyIndex::new(dims, metric, None::<&str>, None::<&str>)
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
                 message: format!("Failed to create VivvyIndex: {:?}", e),
@@ -266,13 +257,8 @@ impl VectorIndex for VivvyVectorIndex {
         true
     }
 
-    fn backup_segments(&self, target_dir: &std::path::Path) -> Result<()> {
-        let idx = self.index.read();
-        idx.flush_and_copy_segments(target_dir)
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Vector segment backup failed: {:?}", e),
-            })?;
+    fn backup_segments(&self, _target_dir: &std::path::Path) -> Result<()> {
+        // Memory store index is ephemeral (rebuilt from SQLite on open), so no segments to backup
         Ok(())
     }
 }
