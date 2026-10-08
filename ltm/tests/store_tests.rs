@@ -923,3 +923,68 @@ fn test_fts_time_window_filtering() {
     assert_eq!(recall.items.len(), 1);
     assert_eq!(recall.items[0].memory.id, id2);
 }
+
+#[test]
+fn test_stale_index_files_cleaned_up_on_open() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+
+    // Create store and add some data
+    let store = MemoryStore::open(config.clone()).unwrap();
+    let scope = MemoryScope::new("acme", "test").unwrap();
+    store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope,
+            content: "Test record".into(),
+            embedding: vec![1.0, 0.0, 0.0],
+            kind: MemoryKind::Fact,
+            importance: 0.8,
+            expires_at_ms: None,
+            metadata: HashMap::new(),
+            source: HashMap::new(),
+        })
+        .unwrap();
+    drop(store);
+
+    // Create stale index files that might be left from older versions
+    let index_wal = dir.path().join("index.wal");
+    let index_manifest = dir.path().join("index.manifest");
+    let segment_file = dir.path().join("seg-001.vivvy");
+
+    std::fs::write(&index_wal, "stale").unwrap();
+    std::fs::write(&index_manifest, "stale").unwrap();
+    std::fs::write(&segment_file, "stale").unwrap();
+
+    // Verify stale files exist before opening
+    assert!(index_wal.exists());
+    assert!(index_manifest.exists());
+    assert!(segment_file.exists());
+
+    // Open store again — should clean up stale files
+    let store = MemoryStore::open(config).unwrap();
+
+    // Verify stale files are removed
+    assert!(!index_wal.exists(), "index.wal should be cleaned up");
+    assert!(!index_manifest.exists(), "index.manifest should be cleaned up");
+    assert!(!segment_file.exists(), "segment files should be cleaned up");
+
+    // Verify store still works correctly
+    let scope = MemoryScope::new("acme", "test").unwrap();
+    let recall = store
+        .recall(RecallRequest {
+            scope,
+            query_embedding: vec![1.0, 0.0, 0.0],
+            query_text: None,
+            limit: 10,
+            filters: Default::default(),
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+    assert_eq!(recall.items.len(), 1);
+}
