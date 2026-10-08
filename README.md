@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/vivvy.jpeg" alt="Vivvy" width="200" />
+  <img src="assets/vivvy.svg" alt="Vivvy" width="200" />
   <br><br>
 
   [![Crates.io](https://img.shields.io/crates/v/vivvy-core?label=vivvy-core)](https://crates.io/crates/vivvy-core)

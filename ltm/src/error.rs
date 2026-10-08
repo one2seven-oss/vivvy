@@ -13,6 +13,8 @@ pub enum ErrorCode {
     RecoveryRequired,
     CorruptStore,
     EncryptionKeyUnavailable,
+    EncryptionFailed,
+    DecryptionFailed,
     PolicyDenied,
     InvalidFilter,
     InvalidInput,
@@ -32,6 +34,8 @@ impl fmt::Display for ErrorCode {
             Self::RecoveryRequired => "RECOVERY_REQUIRED",
             Self::CorruptStore => "CORRUPT_STORE",
             Self::EncryptionKeyUnavailable => "ENCRYPTION_KEY_UNAVAILABLE",
+            Self::EncryptionFailed => "ENCRYPTION_FAILED",
+            Self::DecryptionFailed => "DECRYPTION_FAILED",
             Self::PolicyDenied => "POLICY_DENIED",
             Self::InvalidFilter => "INVALID_FILTER",
             Self::InvalidInput => "INVALID_INPUT",
@@ -102,6 +106,18 @@ pub enum MemoryError {
         message: String,
     },
 
+    #[error("[{code}] Encryption failed: {message}")]
+    EncryptionFailed {
+        code: ErrorCode,
+        message: String,
+    },
+
+    #[error("[{code}] Decryption failed: {message}")]
+    DecryptionFailed {
+        code: ErrorCode,
+        message: String,
+    },
+
     #[error("[{code}] Policy denied memory operation: {message}")]
     PolicyDenied {
         code: ErrorCode,
@@ -145,6 +161,8 @@ impl MemoryError {
             Self::RecoveryRequired { code, .. } => *code,
             Self::CorruptStore { code, .. } => *code,
             Self::EncryptionKeyUnavailable { code, .. } => *code,
+            Self::EncryptionFailed { code, .. } => *code,
+            Self::DecryptionFailed { code, .. } => *code,
             Self::PolicyDenied { code, .. } => *code,
             Self::InvalidFilter { code, .. } => *code,
             Self::InvalidInput { code, .. } => *code,
@@ -177,6 +195,20 @@ impl MemoryError {
     pub fn encryption_key_unavailable(msg: impl Into<String>) -> Self {
         Self::EncryptionKeyUnavailable {
             code: ErrorCode::EncryptionKeyUnavailable,
+            message: msg.into(),
+        }
+    }
+
+    pub fn encryption_failed(msg: impl Into<String>) -> Self {
+        Self::EncryptionFailed {
+            code: ErrorCode::EncryptionFailed,
+            message: msg.into(),
+        }
+    }
+
+    pub fn decryption_failed(msg: impl Into<String>) -> Self {
+        Self::DecryptionFailed {
+            code: ErrorCode::DecryptionFailed,
             message: msg.into(),
         }
     }

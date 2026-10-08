@@ -12,6 +12,50 @@
 - **Explainable Scoring & MMR** — a 4-factor weighted score (similarity, importance, recency, reinforcement) with an optional Maximal Marginal Relevance pass for result diversity.
 - **Token-Budgeted Context Formatting** — render recall results straight into an LLM prompt with a custom template and a hard token budget.
 - **Live Online Backups** — crash-consistent SQLite snapshots without stopping operations; vector index is ephemeral and rebuilt on restore.
+- **Encryption at Rest** — optional per-tenant, field-level encryption (XChaCha20-Poly1305) of content, embeddings, metadata, and the operation journal, keyed via a pluggable `KeyProvider`. Scope, timestamps, and other query keys stay in plaintext so filtering and indexing keep working.
+
+## Encryption at rest
+
+Encryption is opt-in. Supply a [`KeyProvider`] and sensitive fields are sealed
+per-tenant before they touch disk; non-sensitive columns used for querying
+(ids, scope, timestamps, kind, status, importance) stay plaintext. Each sealed
+field carries its own random nonce and is bound to its `(tenant, record, field)`
+via AEAD additional data, so values cannot be swapped between rows or tenants.
+
+```rust
+use std::sync::Arc;
+use vivvy_memory::{MemoryConfig, MemoryStore, NoOpDevKeyProvider, LexicalMode};
+
+let config = MemoryConfig::builder("./agent_data")
+    .dimensions(1536)
+    .embedding_model("text-embedding-3-small")
+    // Bring your own KeyProvider in production; NoOpDevKeyProvider is for tests.
+    .key_provider(Arc::new(NoOpDevKeyProvider::new()))
+    // Optional: enable keyed blind-index keyword recall. Defaults to Disabled.
+    .lexical_mode(LexicalMode::BlindIndex)
+    .build()?;
+let store = MemoryStore::open(config)?;
+# Ok::<(), vivvy_memory::MemoryError>(())
+```
+
+**Lexical recall trade-off.** Because `content` is encrypted, the plaintext FTS5
+index would otherwise leak it. The `LexicalMode` controls this:
+
+| Mode | Meaning |
+| :--- | :--- |
+| `Disabled` *(default when encrypted)* | No keyword index; recall is pure-vector. Leak-free. |
+| `BlindIndex` | Keyword tokens are stored as keyed HMACs — exact-match keyword recall with no plaintext on disk. No BM25 ranking/phrase/prefix, and token frequency is observable to anyone with the database file. |
+| `Plaintext` *(default when unencrypted)* | Normal FTS5. Rejected for an encrypted store. |
+
+Once a store has been opened with encryption, it is recorded in the store
+metadata and can no longer be opened without a `KeyProvider`. Existing
+unencrypted stores can be upgraded in place: legacy rows stay readable and new
+writes are sealed.
+
+> **Not yet covered:** key rotation / re-encryption of existing rows, encryption
+> of the SQLite WAL and temp files (a whole-database layer such as SQLCipher
+> would be needed for those), and `content_hash`, which remains a
+> non-cryptographic dedup digest.
 
 ## Install
 

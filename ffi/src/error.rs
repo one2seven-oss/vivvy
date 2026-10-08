@@ -31,6 +31,8 @@ pub const ERR_INVALID_FILTER: i32 = 11;
 pub const ERR_INVALID_INPUT: i32 = 12;
 pub const ERR_STORE_IO_ERROR: i32 = 13;
 pub const ERR_DATABASE_ERROR: i32 = 14;
+pub const ERR_ENCRYPTION_FAILED: i32 = 15;
+pub const ERR_DECRYPTION_FAILED: i32 = 16;
 
 /// Every failure mode an FFI function body can produce, from bad C arguments
 /// through to a domain error surfaced by `vivvy-memory`.
@@ -64,6 +66,8 @@ impl FfiError {
                 ErrorCode::RecoveryRequired => ERR_RECOVERY_REQUIRED,
                 ErrorCode::CorruptStore => ERR_CORRUPT_STORE,
                 ErrorCode::EncryptionKeyUnavailable => ERR_ENCRYPTION_KEY_UNAVAILABLE,
+                ErrorCode::EncryptionFailed => ERR_ENCRYPTION_FAILED,
+                ErrorCode::DecryptionFailed => ERR_DECRYPTION_FAILED,
                 ErrorCode::PolicyDenied => ERR_POLICY_DENIED,
                 ErrorCode::InvalidFilter => ERR_INVALID_FILTER,
                 ErrorCode::InvalidInput => ERR_INVALID_INPUT,

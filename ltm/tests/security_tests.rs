@@ -155,3 +155,227 @@ fn test_forget_nonexistent_returns_not_found() {
 
     assert_eq!(err.code(), ErrorCode::NotFound);
 }
+
+// ---------------------------------------------------------------------------
+// Encryption-at-rest (field-level, per-tenant) integration tests
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+const SECRET: &str = "the user's social security number is 078-05-1120";
+
+fn encrypted_config(dir: &std::path::Path) -> MemoryConfig {
+    MemoryConfig::builder(dir)
+        .dimensions(3)
+        .embedding_model("test-model")
+        .key_provider(Arc::new(NoOpDevKeyProvider::new()))
+        .build()
+        .unwrap()
+}
+
+fn remember(store: &MemoryStore, scope: &MemoryScope, content: &str) -> String {
+    store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope: scope.clone(),
+            content: content.into(),
+            embedding: vec![0.1, 0.2, 0.3],
+            kind: MemoryKind::Fact,
+            importance: 0.7,
+            expires_at_ms: None,
+            metadata: HashMap::from([(
+                "pii".to_string(),
+                serde_json::Value::String(content.into()),
+            )]),
+            source: HashMap::new(),
+        })
+        .unwrap()
+}
+
+#[test]
+fn test_encrypted_round_trip_returns_plaintext() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = MemoryStore::open(encrypted_config(dir.path())).unwrap();
+    let scope = MemoryScope::new("acme", "support").unwrap();
+
+    let id = remember(&store, &scope, SECRET);
+
+    // get() returns decrypted content and metadata
+    let got = store.get(&scope, &id).unwrap().unwrap();
+    assert_eq!(got.content, SECRET);
+    assert_eq!(
+        got.metadata.get("pii").unwrap(),
+        &serde_json::Value::String(SECRET.into())
+    );
+
+    // recall() (vector path) also returns decrypted content
+    let recall = store
+        .recall(RecallRequest {
+            scope: scope.clone(),
+            query_embedding: vec![0.1, 0.2, 0.3],
+            query_text: None,
+            limit: 5,
+            filters: MemoryFilter::default(),
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+    assert_eq!(recall.items.len(), 1);
+    assert_eq!(recall.items[0].memory.content, SECRET);
+}
+
+#[test]
+fn test_plaintext_never_hits_disk_when_encrypted() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = MemoryStore::open(encrypted_config(dir.path())).unwrap();
+    let scope = MemoryScope::new("acme", "support").unwrap();
+    remember(&store, &scope, SECRET);
+
+    // Flush a fully-consistent copy of the canonical store via VACUUM INTO.
+    let backup_dir = tempfile::tempdir().unwrap();
+    store.backup(backup_dir.path()).unwrap();
+
+    let bytes = std::fs::read(backup_dir.path().join("memory.db")).unwrap();
+    assert!(
+        !contains(&bytes, SECRET.as_bytes()),
+        "plaintext content leaked into the on-disk database"
+    );
+}
+
+#[test]
+fn test_opening_encrypted_store_without_key_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = MemoryStore::open(encrypted_config(dir.path())).unwrap();
+        let scope = MemoryScope::new("acme", "support").unwrap();
+        remember(&store, &scope, SECRET);
+    }
+
+    // Reopen the same directory with no key provider: must be refused.
+    let plain = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+    match MemoryStore::open(plain) {
+        Err(e) => assert_eq!(e.code(), ErrorCode::EncryptionKeyUnavailable),
+        Ok(_) => panic!("expected opening an encrypted store without a key to fail"),
+    }
+}
+
+#[test]
+fn test_wrong_key_cannot_decrypt() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let cfg = MemoryConfig::builder(dir.path())
+            .dimensions(3)
+            .embedding_model("test-model")
+            .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![0xAA; 32])))
+            .build()
+            .unwrap();
+        let store = MemoryStore::open(cfg).unwrap();
+        let scope = MemoryScope::new("acme", "support").unwrap();
+        id = remember(&store, &scope, SECRET);
+    }
+
+    // Reopen with a different key: AEAD must reject the ciphertext.
+    let cfg = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![0xBB; 32])))
+        .build()
+        .unwrap();
+    let store = MemoryStore::open(cfg);
+    // Startup replay rebuilds the index from all active rows, which must
+    // decrypt embeddings; a wrong key makes open() itself fail.
+    match store {
+        Err(e) => assert_eq!(e.code(), ErrorCode::DecryptionFailed),
+        Ok(store) => {
+            let scope = MemoryScope::new("acme", "support").unwrap();
+            let err = store.get(&scope, &id).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::DecryptionFailed);
+        }
+    }
+}
+
+#[test]
+fn test_blind_index_lexical_recall_under_encryption() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .key_provider(Arc::new(NoOpDevKeyProvider::new()))
+        .lexical_mode(LexicalMode::BlindIndex)
+        .build()
+        .unwrap();
+    let store = MemoryStore::open(cfg).unwrap();
+    let scope = MemoryScope::new("acme", "support").unwrap();
+
+    remember(&store, &scope, "user prefers concise technical answers");
+    remember(&store, &scope, "completely unrelated episodic note");
+
+    let recall = store
+        .recall(RecallRequest {
+            scope: scope.clone(),
+            query_embedding: vec![0.9, 0.9, 0.9], // far from stored vectors
+            query_text: Some("technical".into()),
+            limit: 5,
+            filters: MemoryFilter::default(),
+            include_explanations: false,
+            mmr_lambda: None,
+        })
+        .unwrap();
+
+    assert!(
+        recall.items.iter().any(|i| i.memory.content.contains("technical")),
+        "blind-index keyword recall should surface the matching memory"
+    );
+
+    // And the token index must not store the plaintext keyword.
+    let backup_dir = tempfile::tempdir().unwrap();
+    store.backup(backup_dir.path()).unwrap();
+    let bytes = std::fs::read(backup_dir.path().join("memory.db")).unwrap();
+    assert!(!contains(&bytes, b"technical"));
+}
+
+#[test]
+fn test_legacy_plaintext_rows_readable_after_enabling_encryption() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy_id;
+    {
+        // Write a row with encryption OFF (enc_version = 0).
+        let cfg = MemoryConfig::builder(dir.path())
+            .dimensions(3)
+            .embedding_model("test-model")
+            .build()
+            .unwrap();
+        let store = MemoryStore::open(cfg).unwrap();
+        let scope = MemoryScope::new("acme", "support").unwrap();
+        legacy_id = remember(&store, &scope, "legacy plaintext memory");
+    }
+
+    // Reopen the same store WITH encryption enabled.
+    let store = MemoryStore::open(encrypted_config(dir.path())).unwrap();
+    let scope = MemoryScope::new("acme", "support").unwrap();
+
+    // The legacy row still reads correctly...
+    let got = store.get(&scope, &legacy_id).unwrap().unwrap();
+    assert_eq!(got.content, "legacy plaintext memory");
+
+    // ...and new rows are written sealed.
+    let new_id = remember(&store, &scope, SECRET);
+    assert_eq!(store.get(&scope, &new_id).unwrap().unwrap().content, SECRET);
+
+    let backup_dir = tempfile::tempdir().unwrap();
+    store.backup(backup_dir.path()).unwrap();
+    let bytes = std::fs::read(backup_dir.path().join("memory.db")).unwrap();
+    assert!(!contains(&bytes, SECRET.as_bytes()));
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
