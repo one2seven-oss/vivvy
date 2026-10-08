@@ -1,3 +1,4 @@
+use crate::cipher::{field, FieldCipher, LexicalMode, SCHEME_XCHACHA20POLY1305};
 use crate::error::{ErrorCode, MemoryError, Result};
 use crate::model::{MemoryFilter, MemoryKind, MemoryRecord, MemoryStatus};
 use crate::namespace::MemoryScope;
@@ -9,6 +10,71 @@ use std::path::Path;
 fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
     let (chunks, _) = bytes.as_chunks::<4>();
     chunks.iter().map(|&chunk| f32::from_le_bytes(chunk)).collect()
+}
+
+fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
+    embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Raw, still-sealed column values for one `memories` row, read inside a
+/// rusqlite closure. Decryption (which needs the key provider and may fail) is
+/// performed afterwards by [`Repository::materialize`], outside the closure.
+struct RawMemoryRow {
+    id: String,
+    tenant_id: String,
+    namespace: String,
+    agent_id: Option<String>,
+    user_id: Option<String>,
+    kind_str: String,
+    content: Vec<u8>,
+    content_hash: Vec<u8>,
+    embedding: Vec<u8>,
+    embedding_model: String,
+    embedding_dims: i64,
+    importance: f64,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    last_accessed_at_ms: Option<i64>,
+    access_count: i64,
+    expires_at_ms: Option<i64>,
+    status_str: String,
+    revision: i64,
+    metadata: Vec<u8>,
+    source: Vec<u8>,
+    enc_version: i64,
+}
+
+/// Column list shared by every full-record SELECT, with `enc_version` last.
+const RECORD_COLUMNS: &str = "id, tenant_id, namespace, agent_id, user_id, kind, \
+     content, content_hash, embedding, embedding_model, embedding_dims, \
+     importance, created_at_ms, updated_at_ms, last_accessed_at_ms, \
+     access_count, expires_at_ms, status, revision, metadata_json, source_json, enc_version";
+
+fn read_raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawMemoryRow> {
+    Ok(RawMemoryRow {
+        id: row.get(0)?,
+        tenant_id: row.get(1)?,
+        namespace: row.get(2)?,
+        agent_id: row.get(3)?,
+        user_id: row.get(4)?,
+        kind_str: row.get(5)?,
+        content: row.get(6)?,
+        content_hash: row.get(7)?,
+        embedding: row.get(8)?,
+        embedding_model: row.get(9)?,
+        embedding_dims: row.get(10)?,
+        importance: row.get(11)?,
+        created_at_ms: row.get(12)?,
+        updated_at_ms: row.get(13)?,
+        last_accessed_at_ms: row.get(14)?,
+        access_count: row.get(15)?,
+        expires_at_ms: row.get(16)?,
+        status_str: row.get(17)?,
+        revision: row.get(18)?,
+        metadata: row.get(19)?,
+        source: row.get(20)?,
+        enc_version: row.get(21)?,
+    })
 }
 
 const SCHEMA_V1: &str = r#"
@@ -103,6 +169,27 @@ DROP TABLE operations;
 ALTER TABLE operations_v3 RENAME TO operations;
 "#;
 
+// v4 adds encryption-at-rest support:
+//   * `enc_version` marks whether a row's sensitive columns are sealed (1) or
+//     legacy plaintext (0), so old stores keep reading after an upgrade.
+//   * The FTS5 triggers are dropped: content may now be ciphertext, so the
+//     lexical index is maintained from Rust (plaintext, blind-index, or not at
+//     all) depending on the store's LexicalMode.
+//   * `store_meta` records the encryption scheme so an encrypted store cannot
+//     be silently opened without a key, and vice versa.
+const SCHEMA_V4: &str = r#"
+ALTER TABLE memories ADD COLUMN enc_version INTEGER NOT NULL DEFAULT 0;
+
+DROP TRIGGER IF EXISTS memories_ai;
+DROP TRIGGER IF EXISTS memories_ad;
+DROP TRIGGER IF EXISTS memories_au;
+
+CREATE TABLE IF NOT EXISTS store_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"#;
+
 fn sanitize_fts_query(input: &str) -> String {
     let clean: String = input
         .chars()
@@ -123,10 +210,27 @@ fn sanitize_fts_query(input: &str) -> String {
 
 pub struct Repository {
     conn: Mutex<Connection>,
+    cipher: Option<FieldCipher>,
+    lexical_mode: LexicalMode,
 }
 
 impl Repository {
+    /// Open an unencrypted store with plaintext lexical recall (historical
+    /// behavior). Equivalent to [`open_with_encryption`](Self::open_with_encryption)
+    /// with no cipher.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_encryption(db_path, None, LexicalMode::Plaintext)
+    }
+
+    /// Open a store, optionally sealing sensitive fields per-tenant with
+    /// `cipher`. `lexical_mode` selects how the keyword index is maintained and
+    /// must be consistent with whether `cipher` is present (validated by the
+    /// config builder).
+    pub fn open_with_encryption(
+        db_path: impl AsRef<Path>,
+        cipher: Option<FieldCipher>,
+        lexical_mode: LexicalMode,
+    ) -> Result<Self> {
         let conn = Connection::open(db_path.as_ref()).map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
             message: format!("Failed to open SQLite database: {}", e),
@@ -151,10 +255,212 @@ impl Repository {
 
         let repo = Self {
             conn: Mutex::new(conn),
+            cipher,
+            lexical_mode,
         };
         repo.migrate()?;
+        repo.enforce_encryption_contract()?;
         repo.integrity_check()?;
         Ok(repo)
+    }
+
+    /// Guard against opening an encrypted store without a key (which would make
+    /// every record unreadable) or changing the on-disk scheme out from under
+    /// existing sealed data. Records this store's encryption state on first use.
+    fn enforce_encryption_contract(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = 'encryption_scheme'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to read store encryption metadata: {}", e),
+            })?;
+
+        let current = if self.cipher.is_some() {
+            SCHEME_XCHACHA20POLY1305
+        } else {
+            "none"
+        };
+
+        match existing.as_deref() {
+            // Fresh store, or a plaintext store being opened (optionally being
+            // upgraded to encryption). Legacy rows stay readable via enc_version.
+            None | Some("none") => {}
+            // Previously encrypted with the scheme we support: a key is required.
+            Some(scheme) if scheme == SCHEME_XCHACHA20POLY1305 => {
+                if self.cipher.is_none() {
+                    return Err(MemoryError::encryption_key_unavailable(
+                        "store contains encrypted records but was opened without a KeyProvider",
+                    ));
+                }
+            }
+            // Anything else is an unknown/incompatible on-disk scheme.
+            Some(other) => {
+                return Err(MemoryError::CorruptStore {
+                    code: ErrorCode::CorruptStore,
+                    message: format!(
+                        "store encryption scheme mismatch: on-disk '{other}', configured '{current}'"
+                    ),
+                });
+            }
+        }
+
+        // Record/refresh the marker. Once encryption is adopted the marker stays
+        // encrypted, so the store can never later be reopened without a key.
+        conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES ('encryption_scheme', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![current],
+        )
+        .map_err(|e| MemoryError::DatabaseError {
+            code: ErrorCode::DatabaseError,
+            message: format!("Failed to record store encryption metadata: {}", e),
+        })?;
+
+        Ok(())
+    }
+
+    #[inline]
+    fn enc_version(&self) -> i64 {
+        if self.cipher.is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Seal a field for storage, or pass it through unchanged when the store is
+    /// not encrypted.
+    fn seal_field(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+        field_name: &str,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>> {
+        match &self.cipher {
+            Some(c) => c.seal(tenant_id, record_id, field_name, plaintext),
+            None => Ok(plaintext.to_vec()),
+        }
+    }
+
+    /// Open a stored field, honoring the row's `enc_version` so that legacy
+    /// plaintext rows (0) and sealed rows (1) are both handled.
+    fn open_field(
+        &self,
+        enc_version: i64,
+        tenant_id: &str,
+        record_id: &str,
+        field_name: &str,
+        stored: &[u8],
+    ) -> Result<Vec<u8>> {
+        if enc_version == 0 {
+            return Ok(stored.to_vec());
+        }
+        match &self.cipher {
+            Some(c) => c.open(tenant_id, record_id, field_name, stored),
+            None => Err(MemoryError::encryption_key_unavailable(
+                "record is sealed but store was opened without a KeyProvider",
+            )),
+        }
+    }
+
+    /// The value to store in the FTS `content` column for a record, or `None`
+    /// when no lexical index is maintained.
+    fn fts_content_for(&self, record: &MemoryRecord) -> Result<Option<String>> {
+        match self.lexical_mode {
+            LexicalMode::Plaintext => Ok(Some(record.content.clone())),
+            LexicalMode::Disabled => Ok(None),
+            LexicalMode::BlindIndex => {
+                let c = self.cipher.as_ref().ok_or_else(|| {
+                    MemoryError::encryption_key_unavailable(
+                        "BlindIndex lexical mode requires a KeyProvider",
+                    )
+                })?;
+                Ok(Some(
+                    c.blind_index_tokens(record.scope.tenant_id(), &record.content)?,
+                ))
+            }
+        }
+    }
+
+    /// Reconstruct a decrypted [`MemoryRecord`] from a raw row.
+    fn materialize(&self, raw: RawMemoryRow) -> Result<MemoryRecord> {
+        let content_bytes = self.open_field(
+            raw.enc_version,
+            &raw.tenant_id,
+            &raw.id,
+            field::CONTENT,
+            &raw.content,
+        )?;
+        let embedding_bytes = self.open_field(
+            raw.enc_version,
+            &raw.tenant_id,
+            &raw.id,
+            field::EMBEDDING,
+            &raw.embedding,
+        )?;
+        let metadata_bytes = self.open_field(
+            raw.enc_version,
+            &raw.tenant_id,
+            &raw.id,
+            field::METADATA,
+            &raw.metadata,
+        )?;
+        let source_bytes = self.open_field(
+            raw.enc_version,
+            &raw.tenant_id,
+            &raw.id,
+            field::SOURCE,
+            &raw.source,
+        )?;
+
+        let mut scope = MemoryScope::new(raw.tenant_id, raw.namespace)?;
+        if let Some(agent) = raw.agent_id {
+            scope = scope.with_agent(agent)?;
+        }
+        if let Some(user) = raw.user_id {
+            scope = scope.with_user(user)?;
+        }
+
+        let kind = match raw.kind_str.as_str() {
+            "preference" => MemoryKind::Preference,
+            "fact" => MemoryKind::Fact,
+            "instruction" => MemoryKind::Instruction,
+            "context" => MemoryKind::Context,
+            _ => MemoryKind::Episodic,
+        };
+
+        let metadata: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&metadata_bytes).unwrap_or_default();
+        let source: HashMap<String, serde_json::Value> =
+            serde_json::from_slice(&source_bytes).unwrap_or_default();
+
+        Ok(MemoryRecord {
+            id: raw.id,
+            scope,
+            kind,
+            content: String::from_utf8_lossy(&content_bytes).to_string(),
+            content_hash: raw.content_hash,
+            embedding: bytes_to_embedding(&embedding_bytes),
+            embedding_model: raw.embedding_model,
+            embedding_dims: raw.embedding_dims as usize,
+            importance: raw.importance as f32,
+            created_at_ms: raw.created_at_ms,
+            updated_at_ms: raw.updated_at_ms,
+            last_accessed_at_ms: raw.last_accessed_at_ms,
+            access_count: raw.access_count as u64,
+            expires_at_ms: raw.expires_at_ms,
+            status: MemoryStatus::parse(&raw.status_str).unwrap_or(MemoryStatus::Pending),
+            revision: raw.revision as u64,
+            metadata,
+            source,
+        })
     }
 
     /// Perform a crash-consistent online backup of the SQLite database using VACUUM INTO.
@@ -276,6 +582,22 @@ impl Repository {
             })?;
         }
 
+        if current_ver < 4 {
+            tx.execute_batch(SCHEMA_V4)
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to apply schema v4: {}", e),
+                })?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (4, ?)",
+                params![now],
+            )
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to record schema v4 migration: {}", e),
+            })?;
+        }
+
         tx.commit().map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
             message: format!("Failed to commit migration transaction: {}", e),
@@ -314,13 +636,21 @@ impl Repository {
             message: format!("Failed to begin transaction: {}", e),
         })?;
 
-        let embedding_bytes: Vec<u8> = record
-            .embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let tenant = record.scope.tenant_id();
+        let content_blob =
+            self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+        let embedding_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::EMBEDDING,
+            &embedding_to_bytes(&record.embedding),
+        )?;
         let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
         let source_json = serde_json::to_string(&record.source).unwrap_or_else(|_| "{}".into());
+        let metadata_blob =
+            self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
+        let source_blob =
+            self.seal_field(tenant, &record.id, field::SOURCE, source_json.as_bytes())?;
 
         tx.execute(
             r#"
@@ -328,12 +658,14 @@ impl Repository {
                 id, tenant_id, namespace, agent_id, user_id, kind,
                 content, content_hash, embedding, embedding_model, embedding_dims,
                 importance, created_at_ms, updated_at_ms, last_accessed_at_ms,
-                access_count, expires_at_ms, status, revision, metadata_json, source_json
+                access_count, expires_at_ms, status, revision, metadata_json, source_json,
+                enc_version
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?,
+                ?
             )
             "#,
             params![
@@ -343,9 +675,9 @@ impl Repository {
                 record.scope.agent_id(),
                 record.scope.user_id(),
                 format!("{:?}", record.kind).to_lowercase(),
-                record.content.as_bytes(),
+                content_blob,
                 record.content_hash,
-                embedding_bytes,
+                embedding_blob,
                 record.embedding_model,
                 record.embedding_dims as i64,
                 record.importance,
@@ -356,8 +688,9 @@ impl Repository {
                 record.expires_at_ms,
                 record.status.as_str(),
                 record.revision as i64,
-                metadata_json,
-                source_json,
+                metadata_blob,
+                source_blob,
+                self.enc_version(),
             ],
         )
         .map_err(|e| MemoryError::DatabaseError {
@@ -365,7 +698,12 @@ impl Repository {
             message: format!("Failed to insert memory: {}", e),
         })?;
 
+        self.fts_upsert(&tx, record)?;
+
         if let Some(op_id) = operation_id {
+            let payload = serde_json::to_string(record).unwrap_or_else(|_| "{}".into());
+            let payload_blob =
+                self.seal_field(tenant, op_id, field::OP_PAYLOAD, payload.as_bytes())?;
             tx.execute(
                 r#"
                 INSERT INTO operations (
@@ -378,7 +716,7 @@ impl Repository {
                     op_id,
                     record.id,
                     "remember",
-                    serde_json::to_string(record).unwrap_or_else(|_| "{}".into()),
+                    payload_blob,
                     "pending",
                     now_ms,
                 ],
@@ -394,6 +732,42 @@ impl Repository {
             message: format!("Failed to commit memory transaction: {}", e),
         })?;
 
+        Ok(())
+    }
+
+    /// Insert (or replace) the FTS row for a record according to the store's
+    /// lexical mode. No-op under `Disabled`. Runs inside an existing
+    /// transaction so FTS stays consistent with the `memories` write.
+    fn fts_upsert(&self, tx: &rusqlite::Transaction<'_>, record: &MemoryRecord) -> Result<()> {
+        tx.execute("DELETE FROM memories_fts WHERE id = ?", params![record.id])
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to clear FTS row: {}", e),
+            })?;
+        if let Some(fts_content) = self.fts_content_for(record)? {
+            tx.execute(
+                "INSERT INTO memories_fts(id, tenant_id, namespace, content) VALUES (?, ?, ?, ?)",
+                params![
+                    record.id,
+                    record.scope.tenant_id(),
+                    record.scope.namespace(),
+                    fts_content,
+                ],
+            )
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to insert FTS row: {}", e),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn fts_delete(&self, tx: &rusqlite::Transaction<'_>, id: &str) -> Result<()> {
+        tx.execute("DELETE FROM memories_fts WHERE id = ?", params![id])
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to delete FTS row: {}", e),
+            })?;
         Ok(())
     }
 
@@ -420,12 +794,14 @@ impl Repository {
                     id, tenant_id, namespace, agent_id, user_id, kind,
                     content, content_hash, embedding, embedding_model, embedding_dims,
                     importance, created_at_ms, updated_at_ms, last_accessed_at_ms,
-                    access_count, expires_at_ms, status, revision, metadata_json, source_json
+                    access_count, expires_at_ms, status, revision, metadata_json, source_json,
+                    enc_version
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?,
+                    ?
                 )
                 "#,
             ).map_err(|e| MemoryError::DatabaseError {
@@ -444,14 +820,34 @@ impl Repository {
                 message: format!("Failed to prepare batch operation insert statement: {}", e),
             })?;
 
+            let mut fts_del_stmt = tx.prepare("DELETE FROM memories_fts WHERE id = ?")
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare batch FTS delete statement: {}", e),
+                })?;
+            let mut fts_ins_stmt = tx.prepare(
+                "INSERT INTO memories_fts(id, tenant_id, namespace, content) VALUES (?, ?, ?, ?)",
+            ).map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to prepare batch FTS insert statement: {}", e),
+            })?;
+
             for (i, record) in records.iter().enumerate() {
-                let embedding_bytes: Vec<u8> = record
-                    .embedding
-                    .iter()
-                    .flat_map(|f| f.to_le_bytes())
-                    .collect();
+                let tenant = record.scope.tenant_id();
+                let content_blob =
+                    self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+                let embedding_blob = self.seal_field(
+                    tenant,
+                    &record.id,
+                    field::EMBEDDING,
+                    &embedding_to_bytes(&record.embedding),
+                )?;
                 let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
                 let source_json = serde_json::to_string(&record.source).unwrap_or_else(|_| "{}".into());
+                let metadata_blob =
+                    self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
+                let source_blob =
+                    self.seal_field(tenant, &record.id, field::SOURCE, source_json.as_bytes())?;
 
                 mem_stmt.execute(params![
                     record.id,
@@ -460,9 +856,9 @@ impl Repository {
                     record.scope.agent_id(),
                     record.scope.user_id(),
                     format!("{:?}", record.kind).to_lowercase(),
-                    record.content.as_bytes(),
+                    content_blob,
                     record.content_hash,
-                    embedding_bytes,
+                    embedding_blob,
                     record.embedding_model,
                     record.embedding_dims as i64,
                     record.importance,
@@ -473,21 +869,41 @@ impl Repository {
                     record.expires_at_ms,
                     record.status.as_str(),
                     record.revision as i64,
-                    metadata_json,
-                    source_json,
+                    metadata_blob,
+                    source_blob,
+                    self.enc_version(),
                 ]).map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to insert memory in batch: {}", e),
                 })?;
 
+                fts_del_stmt.execute(params![record.id]).map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to clear FTS row in batch: {}", e),
+                })?;
+                if let Some(fts_content) = self.fts_content_for(record)? {
+                    fts_ins_stmt.execute(params![
+                        record.id,
+                        record.scope.tenant_id(),
+                        record.scope.namespace(),
+                        fts_content,
+                    ]).map_err(|e| MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("Failed to insert FTS row in batch: {}", e),
+                    })?;
+                }
+
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
+                    let payload = serde_json::to_string(record).unwrap_or_else(|_| "{}".into());
+                    let payload_blob =
+                        self.seal_field(tenant, op_id, field::OP_PAYLOAD, payload.as_bytes())?;
                     op_stmt.execute(params![
                         record.scope.tenant_id(),
                         record.scope.namespace(),
                         op_id,
                         record.id,
                         "remember",
-                        serde_json::to_string(record).unwrap_or_else(|_| "{}".into()),
+                        payload_blob,
                         "pending",
                         now_ms,
                     ]).map_err(|e| MemoryError::DatabaseError {
@@ -511,107 +927,32 @@ impl Repository {
         scope: &MemoryScope,
         id: &str,
     ) -> Result<Option<MemoryRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare(
-                r#"
-            SELECT id, tenant_id, namespace, agent_id, user_id, kind,
-                   content, content_hash, embedding, embedding_model, embedding_dims,
-                   importance, created_at_ms, updated_at_ms, last_accessed_at_ms,
-                   access_count, expires_at_ms, status, revision, metadata_json, source_json
-            FROM memories
-            WHERE id = ? AND tenant_id = ? AND namespace = ?
-            "#,
-            )
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to prepare query: {}", e),
-            })?;
-
-        let record = stmt
-            .query_row(params![id, scope.tenant_id(), scope.namespace()], |row| {
-                let id: String = row.get(0)?;
-                let tenant_id: String = row.get(1)?;
-                let namespace: String = row.get(2)?;
-                let agent_id: Option<String> = row.get(3)?;
-                let user_id: Option<String> = row.get(4)?;
-                let kind_str: String = row.get(5)?;
-                let content_bytes: Vec<u8> = row.get(6)?;
-                let content_hash: Vec<u8> = row.get(7)?;
-                let embedding_bytes: Vec<u8> = row.get(8)?;
-                let embedding_model: String = row.get(9)?;
-                let embedding_dims: i64 = row.get(10)?;
-                let importance: f64 = row.get(11)?;
-                let created_at_ms: i64 = row.get(12)?;
-                let updated_at_ms: i64 = row.get(13)?;
-                let last_accessed_at_ms: Option<i64> = row.get(14)?;
-                let access_count: i64 = row.get(15)?;
-                let expires_at_ms: Option<i64> = row.get(16)?;
-                let status_str: String = row.get(17)?;
-                let revision: i64 = row.get(18)?;
-                let metadata_json: String = row.get(19)?;
-                let source_json: String = row.get(20)?;
-
-                let mut scope = MemoryScope::new(tenant_id, namespace).map_err(|_| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid scope",
-                        )),
-                    )
+        let raw = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {RECORD_COLUMNS} FROM memories WHERE id = ? AND tenant_id = ? AND namespace = ?"
+                ))
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare query: {}", e),
                 })?;
-                if let Some(agent) = agent_id {
-                    scope = scope.with_agent(agent).unwrap();
-                }
-                if let Some(user) = user_id {
-                    scope = scope.with_user(user).unwrap();
-                }
 
-                let kind = match kind_str.as_str() {
-                    "preference" => MemoryKind::Preference,
-                    "fact" => MemoryKind::Fact,
-                    "instruction" => MemoryKind::Instruction,
-                    "context" => MemoryKind::Context,
-                    _ => MemoryKind::Episodic,
-                };
-
-                let embedding = bytes_to_embedding(&embedding_bytes);
-
-                let metadata: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&metadata_json).unwrap_or_default();
-                let source: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&source_json).unwrap_or_default();
-
-                Ok(MemoryRecord {
-                    id,
-                    scope,
-                    kind,
-                    content: String::from_utf8_lossy(&content_bytes).to_string(),
-                    content_hash,
-                    embedding,
-                    embedding_model,
-                    embedding_dims: embedding_dims as usize,
-                    importance: importance as f32,
-                    created_at_ms,
-                    updated_at_ms,
-                    last_accessed_at_ms,
-                    access_count: access_count as u64,
-                    expires_at_ms,
-                    status: MemoryStatus::parse(&status_str).unwrap_or(MemoryStatus::Pending),
-                    revision: revision as u64,
-                    metadata,
-                    source,
-                })
-            })
+            stmt.query_row(
+                params![id, scope.tenant_id(), scope.namespace()],
+                read_raw_row,
+            )
             .optional()
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
                 message: format!("Query failed: {}", e),
-            })?;
+            })?
+        };
 
-        Ok(record)
+        match raw {
+            Some(raw) => Ok(Some(self.materialize(raw)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn set_status(&self, id: &str, status: MemoryStatus) -> Result<()> {
@@ -661,9 +1002,9 @@ impl Repository {
     }
 
     pub fn get_operation(&self, scope: &MemoryScope, op_id: &str) -> Result<Option<(String, String)>> {
-        let conn = self.conn.lock();
-        let result = conn
-            .query_row(
+        let raw: Option<(String, Vec<u8>)> = {
+            let conn = self.conn.lock();
+            conn.query_row(
                 "SELECT memory_id, payload_json FROM operations WHERE tenant_id = ? AND namespace = ? AND operation_id = ?",
                 params![scope.tenant_id(), scope.namespace(), op_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -672,8 +1013,33 @@ impl Repository {
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
                 message: format!("Failed to query operation: {}", e),
-            })?;
-        Ok(result)
+            })?
+        };
+
+        match raw {
+            Some((memory_id, payload_bytes)) => {
+                let payload_json = self.open_operation_payload(
+                    scope.tenant_id(),
+                    op_id,
+                    &payload_bytes,
+                )?;
+                Ok(Some((memory_id, payload_json)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Decrypt a journal payload if it is a sealed envelope, otherwise return it
+    /// as plaintext. Journal payloads may be legacy plaintext (pre-encryption),
+    /// the literal `{}` of a delete op, or sealed JSON on an encrypted store.
+    fn open_operation_payload(&self, tenant_id: &str, op_id: &str, bytes: &[u8]) -> Result<String> {
+        if let Some(c) = &self.cipher {
+            if FieldCipher::is_sealed(bytes) {
+                let pt = c.open(tenant_id, op_id, field::OP_PAYLOAD, bytes)?;
+                return Ok(String::from_utf8_lossy(&pt).to_string());
+            }
+        }
+        Ok(String::from_utf8_lossy(bytes).to_string())
     }
 
     pub fn mark_operation_applied(&self, scope: &MemoryScope, op_id: &str, applied_at_ms: i64) -> Result<()> {
@@ -749,215 +1115,61 @@ impl Repository {
     }
 
     pub fn get_record_by_id_internal(&self, id: &str) -> Result<Option<MemoryRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare(
-                r#"
-            SELECT id, tenant_id, namespace, agent_id, user_id, kind,
-                   content, content_hash, embedding, embedding_model, embedding_dims,
-                   importance, created_at_ms, updated_at_ms, last_accessed_at_ms,
-                   access_count, expires_at_ms, status, revision, metadata_json, source_json
-            FROM memories
-            WHERE id = ?
-            "#,
-            )
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to prepare internal record query: {}", e),
-            })?;
-
-        let record = stmt
-            .query_row(params![id], |row| {
-                let id: String = row.get(0)?;
-                let tenant_id: String = row.get(1)?;
-                let namespace: String = row.get(2)?;
-                let agent_id: Option<String> = row.get(3)?;
-                let user_id: Option<String> = row.get(4)?;
-                let kind_str: String = row.get(5)?;
-                let content_bytes: Vec<u8> = row.get(6)?;
-                let content_hash: Vec<u8> = row.get(7)?;
-                let embedding_bytes: Vec<u8> = row.get(8)?;
-                let embedding_model: String = row.get(9)?;
-                let embedding_dims: i64 = row.get(10)?;
-                let importance: f64 = row.get(11)?;
-                let created_at_ms: i64 = row.get(12)?;
-                let updated_at_ms: i64 = row.get(13)?;
-                let last_accessed_at_ms: Option<i64> = row.get(14)?;
-                let access_count: i64 = row.get(15)?;
-                let expires_at_ms: Option<i64> = row.get(16)?;
-                let status_str: String = row.get(17)?;
-                let revision: i64 = row.get(18)?;
-                let metadata_json: String = row.get(19)?;
-                let source_json: String = row.get(20)?;
-
-                let mut scope = MemoryScope::new(tenant_id, namespace).map_err(|_| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid scope",
-                        )),
-                    )
+        let raw = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare(&format!("SELECT {RECORD_COLUMNS} FROM memories WHERE id = ?"))
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare internal record query: {}", e),
                 })?;
-                if let Some(agent) = agent_id {
-                    scope = scope.with_agent(agent).unwrap();
-                }
-                if let Some(user) = user_id {
-                    scope = scope.with_user(user).unwrap();
-                }
 
-                let kind = match kind_str.as_str() {
-                    "preference" => MemoryKind::Preference,
-                    "fact" => MemoryKind::Fact,
-                    "instruction" => MemoryKind::Instruction,
-                    "context" => MemoryKind::Context,
-                    _ => MemoryKind::Episodic,
-                };
+            stmt.query_row(params![id], read_raw_row)
+                .optional()
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Internal query failed: {}", e),
+                })?
+        };
 
-                let embedding = bytes_to_embedding(&embedding_bytes);
-
-                let metadata: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&metadata_json).unwrap_or_default();
-                let source: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&source_json).unwrap_or_default();
-
-                Ok(MemoryRecord {
-                    id,
-                    scope,
-                    kind,
-                    content: String::from_utf8_lossy(&content_bytes).to_string(),
-                    content_hash,
-                    embedding,
-                    embedding_model,
-                    embedding_dims: embedding_dims as usize,
-                    importance: importance as f32,
-                    created_at_ms,
-                    updated_at_ms,
-                    last_accessed_at_ms,
-                    access_count: access_count as u64,
-                    expires_at_ms,
-                    status: MemoryStatus::parse(&status_str).unwrap_or(MemoryStatus::Pending),
-                    revision: revision as u64,
-                    metadata,
-                    source,
-                })
-            })
-            .optional()
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Internal query failed: {}", e),
-            })?;
-
-        Ok(record)
+        match raw {
+            Some(raw) => Ok(Some(self.materialize(raw)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn get_all_active_records(&self) -> Result<Vec<MemoryRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare(
-                r#"
-            SELECT id, tenant_id, namespace, agent_id, user_id, kind,
-                   content, content_hash, embedding, embedding_model, embedding_dims,
-                   importance, created_at_ms, updated_at_ms, last_accessed_at_ms,
-                   access_count, expires_at_ms, status, revision, metadata_json, source_json
-            FROM memories
-            WHERE status = 'active'
-            "#,
-            )
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to prepare active records query: {}", e),
-            })?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let tenant_id: String = row.get(1)?;
-                let namespace: String = row.get(2)?;
-                let agent_id: Option<String> = row.get(3)?;
-                let user_id: Option<String> = row.get(4)?;
-                let kind_str: String = row.get(5)?;
-                let content_bytes: Vec<u8> = row.get(6)?;
-                let content_hash: Vec<u8> = row.get(7)?;
-                let embedding_bytes: Vec<u8> = row.get(8)?;
-                let embedding_model: String = row.get(9)?;
-                let embedding_dims: i64 = row.get(10)?;
-                let importance: f64 = row.get(11)?;
-                let created_at_ms: i64 = row.get(12)?;
-                let updated_at_ms: i64 = row.get(13)?;
-                let last_accessed_at_ms: Option<i64> = row.get(14)?;
-                let access_count: i64 = row.get(15)?;
-                let expires_at_ms: Option<i64> = row.get(16)?;
-                let status_str: String = row.get(17)?;
-                let revision: i64 = row.get(18)?;
-                let metadata_json: String = row.get(19)?;
-                let source_json: String = row.get(20)?;
-
-                let mut scope = MemoryScope::new(tenant_id, namespace).map_err(|_| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Invalid scope",
-                        )),
-                    )
+        let raws = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {RECORD_COLUMNS} FROM memories WHERE status = 'active'"
+                ))
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare active records query: {}", e),
                 })?;
-                if let Some(agent) = agent_id {
-                    scope = scope.with_agent(agent).unwrap();
-                }
-                if let Some(user) = user_id {
-                    scope = scope.with_user(user).unwrap();
-                }
 
-                let kind = match kind_str.as_str() {
-                    "preference" => MemoryKind::Preference,
-                    "fact" => MemoryKind::Fact,
-                    "instruction" => MemoryKind::Instruction,
-                    "context" => MemoryKind::Context,
-                    _ => MemoryKind::Episodic,
-                };
+            let rows = stmt
+                .query_map([], read_raw_row)
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Query active records failed: {}", e),
+                })?;
 
-                let embedding = bytes_to_embedding(&embedding_bytes);
+            let mut raws = Vec::new();
+            for r in rows {
+                raws.push(r.map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Row error: {}", e),
+                })?);
+            }
+            raws
+        };
 
-                let metadata: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&metadata_json).unwrap_or_default();
-                let source: HashMap<String, serde_json::Value> =
-                    serde_json::from_str(&source_json).unwrap_or_default();
-
-                Ok(MemoryRecord {
-                    id,
-                    scope,
-                    kind,
-                    content: String::from_utf8_lossy(&content_bytes).to_string(),
-                    content_hash,
-                    embedding,
-                    embedding_model,
-                    embedding_dims: embedding_dims as usize,
-                    importance: importance as f32,
-                    created_at_ms,
-                    updated_at_ms,
-                    last_accessed_at_ms,
-                    access_count: access_count as u64,
-                    expires_at_ms,
-                    status: MemoryStatus::parse(&status_str).unwrap_or(MemoryStatus::Active),
-                    revision: revision as u64,
-                    metadata,
-                    source,
-                })
-            })
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Query active records failed: {}", e),
-            })?;
-
-        let mut records = Vec::new();
-        for r in rows {
-            records.push(r.map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Row error: {}", e),
-            })?);
+        let mut records = Vec::with_capacity(raws.len());
+        for raw in raws {
+            records.push(self.materialize(raw)?);
         }
         Ok(records)
     }
@@ -1002,12 +1214,18 @@ impl Repository {
             });
         }
 
-        let embedding_bytes: Vec<u8> = record
-            .embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let tenant = record.scope.tenant_id();
+        let content_blob =
+            self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+        let embedding_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::EMBEDDING,
+            &embedding_to_bytes(&record.embedding),
+        )?;
         let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
+        let metadata_blob =
+            self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
 
         tx.execute(
             r#"
@@ -1020,19 +1238,21 @@ impl Repository {
                 expires_at_ms = ?,
                 status = ?,
                 revision = ?,
-                metadata_json = ?
+                metadata_json = ?,
+                enc_version = ?
             WHERE id = ? AND revision = ?
             "#,
             params![
-                record.content.as_bytes(),
+                content_blob,
                 record.content_hash,
-                embedding_bytes,
+                embedding_blob,
                 record.importance,
                 record.updated_at_ms,
                 record.expires_at_ms,
                 record.status.as_str(),
                 (expected_revision + 1) as i64,
-                metadata_json,
+                metadata_blob,
+                self.enc_version(),
                 record.id,
                 expected_revision as i64,
             ],
@@ -1042,7 +1262,12 @@ impl Repository {
             message: format!("Failed to update memory record: {}", e),
         })?;
 
+        self.fts_upsert(&tx, record)?;
+
         if let Some(op_id) = operation_id {
+            let payload = serde_json::to_string(record).unwrap_or_else(|_| "{}".into());
+            let payload_blob =
+                self.seal_field(tenant, op_id, field::OP_PAYLOAD, payload.as_bytes())?;
             tx.execute(
                 r#"
                 INSERT INTO operations (
@@ -1055,7 +1280,7 @@ impl Repository {
                     op_id,
                     record.id,
                     "update",
-                    serde_json::to_string(record).unwrap_or_else(|_| "{}".into()),
+                    payload_blob,
                     "pending",
                     now_ms,
                 ],
@@ -1104,6 +1329,8 @@ impl Repository {
         if rows_affected == 0 {
             return Err(MemoryError::not_found(id));
         }
+
+        self.fts_delete(&tx, id)?;
 
         if let Some(op_id) = operation_id {
             tx.execute(
@@ -1169,6 +1396,12 @@ impl Repository {
                 message: format!("Failed to prepare delete operation batch statement: {}", e),
             })?;
 
+            let mut fts_del_stmt = tx.prepare("DELETE FROM memories_fts WHERE id = ?")
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare batch FTS delete statement: {}", e),
+                })?;
+
             for (i, id) in ids.iter().enumerate() {
                 let rows = del_stmt.execute(params![now_ms, id, scope.tenant_id(), scope.namespace()])
                     .map_err(|e| MemoryError::DatabaseError {
@@ -1179,6 +1412,11 @@ impl Repository {
                 if rows == 0 {
                     return Err(MemoryError::not_found(*id));
                 }
+
+                fts_del_stmt.execute(params![id]).map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to delete FTS row in batch: {}", e),
+                })?;
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
                     op_stmt.execute(params![scope.tenant_id(), scope.namespace(), op_id, id, "delete", "{}", "applied", now_ms, now_ms])
@@ -1205,8 +1443,20 @@ impl Repository {
         filter: &MemoryFilter,
         limit: usize,
     ) -> Result<Vec<String>> {
-        let sanitized = sanitize_fts_query(query_text);
-        if sanitized.is_empty() {
+        let match_expr = match self.lexical_mode {
+            // No lexical index is maintained; recall is pure-vector only.
+            LexicalMode::Disabled => return Ok(Vec::new()),
+            LexicalMode::Plaintext => sanitize_fts_query(query_text),
+            LexicalMode::BlindIndex => {
+                let c = self.cipher.as_ref().ok_or_else(|| {
+                    MemoryError::encryption_key_unavailable(
+                        "BlindIndex lexical mode requires a KeyProvider",
+                    )
+                })?;
+                c.blind_index_query(scope.tenant_id(), query_text)?
+            }
+        };
+        if match_expr.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -1225,7 +1475,7 @@ impl Repository {
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![
             Box::new(scope.tenant_id().to_string()),
             Box::new(scope.namespace().to_string()),
-            Box::new(sanitized),
+            Box::new(match_expr),
         ];
 
         if let Some(ref meta) = filter.metadata_eq {
@@ -1329,23 +1579,65 @@ impl Repository {
             message: format!("Failed to start vacuum transaction: {}", e),
         })?;
 
-        let purged_count = tx
-            .execute(
-                r#"
-            DELETE FROM memories
-            WHERE id IN (
+        // Collect the batch of ids to purge first so the FTS index can be kept
+        // consistent (the AFTER DELETE trigger was removed in schema v4).
+        let purge_ids: Vec<String> = {
+            let mut stmt = tx
+                .prepare(
+                    r#"
                 SELECT id FROM memories
                 WHERE status = 'deleted'
                    OR (expires_at_ms IS NOT NULL AND expires_at_ms <= ?)
                 LIMIT ?
-            )
-            "#,
-                params![now_ms, batch_size as i64],
-            )
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to vacuum tombstoned records: {}", e),
-            })?;
+                "#,
+                )
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare vacuum scan: {}", e),
+                })?;
+            let rows = stmt
+                .query_map(params![now_ms, batch_size as i64], |row| row.get::<_, String>(0))
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to scan vacuum candidates: {}", e),
+                })?;
+            let mut ids = Vec::new();
+            for r in rows {
+                ids.push(r.map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Vacuum scan row error: {}", e),
+                })?);
+            }
+            ids
+        };
+
+        let mut purged_count = 0usize;
+        {
+            let mut del_mem = tx
+                .prepare("DELETE FROM memories WHERE id = ?")
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare vacuum delete: {}", e),
+                })?;
+            let mut del_fts = tx
+                .prepare("DELETE FROM memories_fts WHERE id = ?")
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare vacuum FTS delete: {}", e),
+                })?;
+            for id in &purge_ids {
+                purged_count += del_mem.execute(params![id]).map_err(|e| {
+                    MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("Failed to vacuum tombstoned records: {}", e),
+                    }
+                })?;
+                del_fts.execute(params![id]).map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to vacuum FTS rows: {}", e),
+                })?;
+            }
+        }
 
         tx.commit().map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,

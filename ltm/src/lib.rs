@@ -1,3 +1,4 @@
+pub mod cipher;
 pub mod config;
 pub mod crypto;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod namespace;
 pub mod repository;
 pub mod telemetry;
 
+pub use cipher::{FieldCipher, LexicalMode};
 pub use config::MemoryConfig;
 pub use crypto::{KeyProvider, MissingKeyProvider, NoOpDevKeyProvider};
 pub use error::{ErrorCode, MemoryError, Result};
@@ -61,7 +63,14 @@ impl MemoryStore {
         }
 
         let db_path = path.join("memory.db");
-        let repo = Arc::new(Repository::open(db_path)?);
+        let cipher = config
+            .key_provider()
+            .map(|p| FieldCipher::new(p.clone(), config.lexical_mode()));
+        let repo = Arc::new(Repository::open_with_encryption(
+            db_path,
+            cipher,
+            config.lexical_mode(),
+        )?);
 
         let index = Arc::new(VivvyVectorIndex::new(config.dimensions(), Metric::Cosine)?);
         let coordinator = JournalCoordinator::new(repo.clone(), index.clone());

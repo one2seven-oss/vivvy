@@ -37,6 +37,8 @@
  *   12  VIVVY_ERR_INVALID_INPUT
  *   13  VIVVY_ERR_STORE_IO_ERROR
  *   14  VIVVY_ERR_DATABASE_ERROR
+ *   15  VIVVY_ERR_ENCRYPTION_FAILED
+ *   16  VIVVY_ERR_DECRYPTION_FAILED
  *
  * Strings: any pointer returned through an `out_*` parameter is heap-allocated
  * by Rust and MUST be released with vivvy_free_string() exactly once. The
