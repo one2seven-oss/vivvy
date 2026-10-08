@@ -11,7 +11,7 @@
 - **Hybrid Recall** — dense HNSW vector search fused with SQLite FTS5 lexical search via Reciprocal Rank Fusion (RRF).
 - **Explainable Scoring & MMR** — a 4-factor weighted score (similarity, importance, recency, reinforcement) with an optional Maximal Marginal Relevance pass for result diversity.
 - **Token-Budgeted Context Formatting** — render recall results straight into an LLM prompt with a custom template and a hard token budget.
-- **Live Online Backups** — crash-consistent snapshots (SQLite + vector segments) without stopping operations.
+- **Live Online Backups** — crash-consistent SQLite snapshots without stopping operations; vector index is ephemeral and rebuilt on restore.
 
 ## Install
 
