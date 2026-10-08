@@ -55,7 +55,7 @@ Measured on single-machine benchmark suite (`cargo run --release --package bench
 * **Strict Multi-Tenant Isolation**: Enforces tenant, namespace, agent, and user boundaries at API entry and SQL query level. Zero cross-tenant data leakage.
 * **Hybrid Candidate Recall**: Combines SQLite FTS5 lexical keyword matching with dense HNSW vector search using Reciprocal Rank Fusion (RRF).
 * **Token-Budgeted Context Formatter (`format_context`)**: Formats recalled agent memories into custom templated prompt blocks bounded by exact LLM token budgets.
-* **Live Zero-Downtime Store Backups (`backup`)**: Creates crash-consistent online backup snapshots of SQLite (via `VACUUM INTO`) and vector engine segments without interrupting store operation.
+* **Live Zero-Downtime Store Backups (`backup`)**: Creates crash-consistent online backup snapshots of SQLite (via `VACUUM INTO`) without interrupting store operation; vector index is ephemeral and rebuilt on restore.
 * **Zero-Copy NumPy & PyTorch Ingestion**: Direct PyO3 C-contiguous buffer protocol ingestion for `np.ndarray` float32 arrays with GIL release during search & inserts.
 * **Transparent Reranking & MMR**: 4-component weighted scoring (Similarity, Importance, Recency, Reinforcement) plus optional Maximal Marginal Relevance (MMR) deduplication.
 * **Security & Operations Primitives**: Encrypted storage interfaces (`KeyProvider`), telemetry redaction (`TelemetryRecord`), non-blocking health checks (`StoreHealth`), and resumable tombstone vacuuming (`vacuum_tombstones`).
