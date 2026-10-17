@@ -180,39 +180,50 @@ impl VectorIndex for VivvyVectorIndex {
             });
         }
 
-        let k_fetch = limit * 3 + 10; // Overfetch to account for tombstones/updates
-        let raw_results = {
-            let idx = self.index.read();
-            idx.search(query, k_fetch)
-                .map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("VivvyIndex search failed: {:?}", e),
-                })?
-        };
-
-        let u64_map = self.u64_to_id.read();
-        let tombstones = self.tombstones.read();
-
-        let mut final_results = Vec::with_capacity(limit);
-        let mut seen = HashMap::new();
-
-        for (u64_id, dist) in raw_results {
-            if let Some(mem_id) = u64_map.get(&u64_id) {
-                if tombstones.contains_key(mem_id) {
-                    continue;
-                }
-                if seen.contains_key(mem_id) {
-                    continue;
-                }
-                seen.insert(mem_id.clone(), true);
-                final_results.push((mem_id.clone(), dist));
-                if final_results.len() == limit {
-                    break;
-                }
-            }
+        if limit == 0 {
+            return Ok(Vec::new());
         }
 
-        Ok(final_results)
+        let mut k_fetch = limit.saturating_mul(3).saturating_add(10);
+        loop {
+            let raw_results = {
+                let idx = self.index.read();
+                idx.search(query, k_fetch)
+                    .map_err(|e| MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("VivvyIndex search failed: {:?}", e),
+                    })?
+            };
+
+            let u64_map = self.u64_to_id.read();
+            let tombstones = self.tombstones.read();
+
+            let mut final_results = Vec::with_capacity(limit);
+            let mut seen = HashMap::new();
+
+            for (u64_id, dist) in &raw_results {
+                if let Some(mem_id) = u64_map.get(u64_id) {
+                    if tombstones.contains_key(mem_id) || seen.contains_key(mem_id) {
+                        continue;
+                    }
+                    seen.insert(mem_id.clone(), true);
+                    final_results.push((mem_id.clone(), *dist));
+                    if final_results.len() == limit {
+                        return Ok(final_results);
+                    }
+                }
+            }
+
+            if raw_results.len() < k_fetch {
+                return Ok(final_results);
+            }
+
+            let next_fetch = k_fetch.saturating_mul(2);
+            if next_fetch <= k_fetch {
+                return Ok(final_results);
+            }
+            k_fetch = next_fetch;
+        }
     }
 
     fn rebuild<'a>(&self, records: Box<dyn Iterator<Item = &'a MemoryRecord> + 'a>) -> Result<()> {

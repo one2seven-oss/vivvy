@@ -2,6 +2,28 @@ use std::collections::HashMap;
 use tempfile::tempdir;
 use vivvy_memory::*;
 
+fn remember_test_record(
+    store: &MemoryStore,
+    scope: &MemoryScope,
+    content: impl Into<String>,
+    embedding: Vec<f32>,
+    kind: MemoryKind,
+) -> String {
+    store
+        .remember(RememberRequest {
+            operation_id: None,
+            scope: scope.clone(),
+            content: content.into(),
+            embedding,
+            kind,
+            importance: 1.0,
+            expires_at_ms: None,
+            metadata: HashMap::new(),
+            source: HashMap::new(),
+        })
+        .unwrap()
+}
+
 #[test]
 fn test_idempotent_remember() {
     let dir = tempdir().unwrap();
@@ -103,6 +125,123 @@ fn test_recall_and_explainability() {
         .unwrap();
 
     assert_eq!(recall_b.items.len(), 0);
+}
+
+#[test]
+fn test_recall_widens_candidates_past_other_scopes() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+    let store = MemoryStore::open(config).unwrap();
+    let requested_scope = MemoryScope::new("tenant-a", "support").unwrap();
+    let other_scope = MemoryScope::new("tenant-b", "support").unwrap();
+
+    for index in 0..20 {
+        remember_test_record(
+            &store,
+            &other_scope,
+            format!("Other tenant memory {index}"),
+            vec![1.0, 0.0, 0.0],
+            MemoryKind::Fact,
+        );
+    }
+    let target_id = remember_test_record(
+        &store,
+        &requested_scope,
+        "Requested tenant memory",
+        vec![0.8, 0.6, 0.0],
+        MemoryKind::Preference,
+    );
+
+    let recall = store
+        .recall(RecallRequest::new(requested_scope, vec![1.0, 0.0, 0.0], 1))
+        .unwrap();
+
+    assert_eq!(recall.items.len(), 1);
+    assert_eq!(recall.items[0].memory.id, target_id);
+}
+
+#[test]
+fn test_recall_widens_candidates_past_filter_misses() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+    let store = MemoryStore::open(config).unwrap();
+    let scope = MemoryScope::new("tenant-a", "support").unwrap();
+
+    for index in 0..20 {
+        remember_test_record(
+            &store,
+            &scope,
+            format!("Unfiltered memory {index}"),
+            vec![1.0, 0.0, 0.0],
+            MemoryKind::Fact,
+        );
+    }
+    let target_id = remember_test_record(
+        &store,
+        &scope,
+        "Filtered memory",
+        vec![0.8, 0.6, 0.0],
+        MemoryKind::Preference,
+    );
+
+    let mut request = RecallRequest::new(scope, vec![1.0, 0.0, 0.0], 1);
+    request.filters = MemoryFilter::kind_in([MemoryKind::Preference]);
+    let recall = store.recall(request).unwrap();
+
+    assert_eq!(recall.items.len(), 1);
+    assert_eq!(recall.items[0].memory.id, target_id);
+}
+
+#[test]
+fn test_recall_widens_vector_search_past_tombstones() {
+    let dir = tempdir().unwrap();
+    let config = MemoryConfig::builder(dir.path())
+        .dimensions(3)
+        .embedding_model("test-model")
+        .build()
+        .unwrap();
+    let store = MemoryStore::open(config).unwrap();
+    let requested_scope = MemoryScope::new("tenant-a", "support").unwrap();
+    let other_scope = MemoryScope::new("tenant-b", "support").unwrap();
+
+    for index in 0..20 {
+        let id = remember_test_record(
+            &store,
+            &other_scope,
+            format!("Removed tenant memory {index}"),
+            vec![1.0, 0.0, 0.0],
+            MemoryKind::Fact,
+        );
+        store
+            .forget(ForgetRequest {
+                operation_id: None,
+                scope: other_scope.clone(),
+                id,
+            })
+            .unwrap();
+    }
+    let target_id = remember_test_record(
+        &store,
+        &requested_scope,
+        "Requested tenant memory",
+        vec![0.8, 0.6, 0.0],
+        MemoryKind::Preference,
+    );
+
+    let recall = store
+        .recall(RecallRequest::new(requested_scope, vec![1.0, 0.0, 0.0], 1))
+        .unwrap();
+
+    assert_eq!(recall.items.len(), 1);
+    assert_eq!(recall.items[0].memory.id, target_id);
 }
 
 #[test]
