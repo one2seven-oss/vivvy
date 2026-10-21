@@ -38,6 +38,63 @@ pub struct MemoryStore {
     coordinator: JournalCoordinator,
 }
 
+fn record_matches_recall(req: &RecallRequest, record: &MemoryRecord, now_ms: i64) -> bool {
+    if record.status != MemoryStatus::Active {
+        return false;
+    }
+
+    if record
+        .expires_at_ms
+        .is_some_and(|expires_at| now_ms >= expires_at)
+    {
+        return false;
+    }
+
+    if req
+        .filters
+        .kinds
+        .as_ref()
+        .is_some_and(|kinds| !kinds.contains(&record.kind))
+    {
+        return false;
+    }
+
+    if req
+        .filters
+        .min_importance
+        .is_some_and(|minimum| record.importance < minimum)
+    {
+        return false;
+    }
+
+    if let Some(metadata_filter) = &req.filters.metadata_eq {
+        if metadata_filter
+            .iter()
+            .any(|(key, expected)| record.metadata.get(key) != Some(expected))
+        {
+            return false;
+        }
+    }
+
+    if req
+        .filters
+        .created_after_ms
+        .is_some_and(|after| record.created_at_ms < after)
+    {
+        return false;
+    }
+
+    if req
+        .filters
+        .created_before_ms
+        .is_some_and(|before| record.created_at_ms > before)
+    {
+        return false;
+    }
+
+    true
+}
+
 impl MemoryStore {
     /// Open or initialize a memory store at the configured directory.
     pub fn open(config: MemoryConfig) -> Result<Self> {
@@ -192,15 +249,63 @@ impl MemoryStore {
     pub fn recall(&self, req: RecallRequest) -> Result<RecallResponse> {
         req.validate(self.config.dimensions())?;
 
-        let candidate_limit = req.limit.min(self.config.max_recall_limit()) * 3;
-        let vector_candidates = self
-            .index
-            .search(&req.query_embedding, candidate_limit)?;
+        let recall_limit = req.limit.min(self.config.max_recall_limit());
+        if recall_limit == 0 {
+            return Ok(RecallResponse {
+                items: Vec::new(),
+                total_candidates: 0,
+            });
+        }
+
+        let mut candidate_limit = recall_limit.saturating_mul(3).max(1);
 
         let fts_candidate_ids = if let Some(ref text) = req.query_text {
             self.repo.search_fts(&req.scope, text, &req.filters, candidate_limit)?
         } else {
             Vec::new()
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let mut record_cache = std::collections::HashMap::new();
+        let vector_candidates = loop {
+            let vector_candidates = self.index.search(&req.query_embedding, candidate_limit)?;
+            let mut eligible_count = 0;
+            let mut seen_ids = std::collections::HashSet::new();
+
+            for mem_id in fts_candidate_ids
+                .iter()
+                .chain(vector_candidates.iter().map(|(mem_id, _)| mem_id))
+            {
+                if !seen_ids.insert(mem_id.clone()) {
+                    continue;
+                }
+
+                if !record_cache.contains_key(mem_id) {
+                    let record = self.repo.get_by_scope_and_id(&req.scope, mem_id)?;
+                    record_cache.insert(mem_id.clone(), record);
+                }
+
+                if record_cache
+                    .get(mem_id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|record| record_matches_recall(&req, record, now_ms))
+                {
+                    eligible_count += 1;
+                }
+            }
+
+            if eligible_count >= recall_limit || vector_candidates.len() < candidate_limit {
+                break vector_candidates;
+            }
+
+            let next_limit = candidate_limit.saturating_mul(2);
+            if next_limit <= candidate_limit {
+                break vector_candidates;
+            }
+            candidate_limit = next_limit;
         };
 
         // Combine candidate IDs with RRF scoring & track sources
@@ -228,63 +333,13 @@ impl MemoryStore {
         });
 
         let mut items = Vec::new();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
         let half_life_ms = req.scoring.recency_half_life_days * 86_400_000.0;
         let is_default_scoring = req.scoring == ScoringConfig::default();
 
         for mem_id in unique_candidate_ids {
-            if let Some(record) = self.repo.get_by_scope_and_id(&req.scope, &mem_id)? {
-                if record.status != MemoryStatus::Active {
+            if let Some(record) = record_cache.get(&mem_id).and_then(Option::as_ref).cloned() {
+                if !record_matches_recall(&req, &record, now_ms) {
                     continue;
-                }
-
-                if let Some(exp) = record.expires_at_ms {
-                    if now_ms >= exp {
-                        continue;
-                    }
-                }
-
-                if let Some(ref kinds) = req.filters.kinds {
-                    if !kinds.contains(&record.kind) {
-                        continue;
-                    }
-                }
-
-                if let Some(min_imp) = req.filters.min_importance {
-                    if record.importance < min_imp {
-                        continue;
-                    }
-                }
-
-                if let Some(ref meta_filter) = req.filters.metadata_eq {
-                    let mut matches = true;
-                    for (k, expected_val) in meta_filter {
-                        match record.metadata.get(k) {
-                            Some(actual_val) if actual_val == expected_val => continue,
-                            _ => {
-                                matches = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !matches {
-                        continue;
-                    }
-                }
-
-                if let Some(after) = req.filters.created_after_ms {
-                    if record.created_at_ms < after {
-                        continue;
-                    }
-                }
-
-                if let Some(before) = req.filters.created_before_ms {
-                    if record.created_at_ms > before {
-                        continue;
-                    }
                 }
 
                 let distance = vivvy_core::distance::cosine(&req.query_embedding, &record.embedding);
@@ -346,7 +401,7 @@ impl MemoryStore {
             let mut selected: Vec<RecallItem> = Vec::new();
             let mut remaining = items;
 
-            while !remaining.is_empty() && selected.len() < req.limit {
+            while !remaining.is_empty() && selected.len() < recall_limit {
                 let mut best_idx = 0;
                 let mut best_mmr_score = f32::NEG_INFINITY;
 
@@ -386,7 +441,7 @@ impl MemoryStore {
         } else {
             // Sort items by total score descending
             items.sort_unstable_by(|a, b| b.score.total_cmp(&a.score));
-            items.truncate(req.limit);
+            items.truncate(recall_limit);
 
             Ok(RecallResponse {
                 total_candidates: items.len(),
@@ -596,4 +651,70 @@ fn estimate_tokens(text: &str) -> usize {
         return 0;
     }
     (text.len() as f32 / 4.0).ceil() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn recall_reuses_scope_lookup_results_for_scoring() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MemoryConfig::builder(dir.path())
+            .dimensions(3)
+            .embedding_model("test-model")
+            .build()
+            .unwrap();
+        let store = MemoryStore::open(config).unwrap();
+        let requested_scope = MemoryScope::new("tenant-a", "support").unwrap();
+        let other_scope = MemoryScope::new("tenant-b", "support").unwrap();
+
+        for index in 0..20 {
+            store
+                .remember(RememberRequest {
+                    operation_id: None,
+                    scope: other_scope.clone(),
+                    content: format!("Other tenant memory {index}"),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    kind: MemoryKind::Fact,
+                    importance: 1.0,
+                    expires_at_ms: None,
+                    metadata: HashMap::new(),
+                    source: HashMap::new(),
+                })
+                .unwrap();
+        }
+
+        let target_id = store
+            .remember(RememberRequest {
+                operation_id: None,
+                scope: requested_scope.clone(),
+                content: "Requested tenant memory".into(),
+                embedding: vec![0.8, 0.6, 0.0],
+                kind: MemoryKind::Preference,
+                importance: 1.0,
+                expires_at_ms: None,
+                metadata: HashMap::new(),
+                source: HashMap::new(),
+            })
+            .unwrap();
+
+        let before_recall = store.repo.scope_lookup_count();
+        let recall = store
+            .recall(RecallRequest::new(
+                requested_scope,
+                vec![1.0, 0.0, 0.0],
+                1,
+            ))
+            .unwrap();
+
+        assert_eq!(recall.items.len(), 1);
+        assert_eq!(recall.items[0].memory.id, target_id);
+        assert_eq!(
+            store.repo.scope_lookup_count() - before_recall,
+            21,
+            "each unique candidate, including cross-scope candidates cached as None, should be queried once"
+        );
+    }
 }

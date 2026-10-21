@@ -6,6 +6,8 @@ use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
     let (chunks, _) = bytes.as_chunks::<4>();
@@ -212,6 +214,8 @@ pub struct Repository {
     conn: Mutex<Connection>,
     cipher: Option<FieldCipher>,
     lexical_mode: LexicalMode,
+    #[cfg(test)]
+    scope_lookup_count: AtomicUsize,
 }
 
 impl Repository {
@@ -257,6 +261,8 @@ impl Repository {
             conn: Mutex::new(conn),
             cipher,
             lexical_mode,
+            #[cfg(test)]
+            scope_lookup_count: AtomicUsize::new(0),
         };
         repo.migrate()?;
         repo.enforce_encryption_contract()?;
@@ -1043,6 +1049,9 @@ impl Repository {
         scope: &MemoryScope,
         id: &str,
     ) -> Result<Option<MemoryRecord>> {
+        #[cfg(test)]
+        self.scope_lookup_count.fetch_add(1, Ordering::Relaxed);
+
         let raw = {
             let conn = self.conn.lock();
             let mut stmt = conn
@@ -1069,6 +1078,11 @@ impl Repository {
             Some(raw) => Ok(Some(self.materialize(raw)?)),
             None => Ok(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scope_lookup_count(&self) -> usize {
+        self.scope_lookup_count.load(Ordering::Relaxed)
     }
 
     pub fn set_status(&self, id: &str, status: MemoryStatus) -> Result<()> {
