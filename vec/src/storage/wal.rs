@@ -12,10 +12,11 @@ pub enum WalError {
     Corrupt(u64),
 }
 
-///single recorded operation in the WAL.
-#[derive(Debug, Clone)]
+/// Single recorded operation in the WAL.
+#[derive(Debug, Clone, PartialEq)]
 pub enum WalEntry {
     Insert { id: u64, vector: Vec<f32> },
+    Delete { id: u64 },
 }
 
 /// append-only, crash-safe.
@@ -43,13 +44,20 @@ impl WalWriter {
     }
 
     pub fn append(&mut self, entry: &WalEntry) -> Result<(), WalError> {
-        let WalEntry::Insert { id, vector } = entry;
-        self.file.write_all(&[0x01])?;
-        self.file.write_all(&id.to_le_bytes())?;
-        let dim = vector.len() as u32;
-        self.file.write_all(&dim.to_le_bytes())?;
-        let bytes: &[u8] = bytemuck::cast_slice(vector.as_slice());
-        self.file.write_all(bytes)?;
+        match entry {
+            WalEntry::Insert { id, vector } => {
+                self.file.write_all(&[0x01])?;
+                self.file.write_all(&id.to_le_bytes())?;
+                let dim = vector.len() as u32;
+                self.file.write_all(&dim.to_le_bytes())?;
+                let bytes: &[u8] = bytemuck::cast_slice(vector.as_slice());
+                self.file.write_all(bytes)?;
+            }
+            WalEntry::Delete { id } => {
+                self.file.write_all(&[0x02])?;
+                self.file.write_all(&id.to_le_bytes())?;
+            }
+        }
         Ok(())
     }
 
@@ -104,6 +112,13 @@ impl WalWriter {
                     off += 8u64 + 4 + (dim * 4) as u64;
                     f(WalEntry::Insert { id, vector });
                 }
+                0x02 => {
+                    let mut id_buf = [0u8; 8];
+                    reader.read_exact(&mut id_buf)?;
+                    let id = u64::from_le_bytes(id_buf);
+                    off += 8u64;
+                    f(WalEntry::Delete { id });
+                }
                 tag => {
                     warn!(
                         "WAL replay: unknown tag {:#04x} at offset {}, stopping",
@@ -140,9 +155,45 @@ mod tests {
         let mut entries = Vec::new();
         WalWriter::replay(&path, |e| entries.push(e)).unwrap();
         assert_eq!(entries.len(), 1);
-        let WalEntry::Insert { id, vector } = &entries[0];
-        assert_eq!(*id, 1);
-        assert_eq!(vector, &[1.0, 2.0, 3.0]);
+        assert_eq!(
+            entries[0],
+            WalEntry::Insert {
+                id: 1,
+                vector: vec![1.0, 2.0, 3.0],
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wal_delete_roundtrip() {
+        let dir = std::env::temp_dir().join("vivvy-wal-delete-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.log");
+
+        {
+            let mut wal = WalWriter::open(&path).unwrap();
+            wal.append(&WalEntry::Insert {
+                id: 10,
+                vector: vec![4.0, 5.0, 6.0],
+            })
+            .unwrap();
+            wal.append(&WalEntry::Delete { id: 10 }).unwrap();
+            wal.commit().unwrap();
+        }
+
+        let mut entries = Vec::new();
+        WalWriter::replay(&path, |e| entries.push(e)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0],
+            WalEntry::Insert {
+                id: 10,
+                vector: vec![4.0, 5.0, 6.0],
+            }
+        );
+        assert_eq!(entries[1], WalEntry::Delete { id: 10 });
 
         let _ = std::fs::remove_dir_all(&dir);
     }

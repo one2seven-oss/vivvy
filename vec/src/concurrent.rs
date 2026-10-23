@@ -7,6 +7,8 @@ use crate::storage::wal::{WalEntry, WalError, WalWriter};
 use arc_swap::ArcSwap;
 use log::{info, warn};
 use parking_lot::{Mutex, RwLock};
+use roaring::RoaringTreemap;
+use std::collections::HashSet;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +40,7 @@ pub struct VivvyIndex {
     handle: Option<thread::JoinHandle<()>>,
     pub(crate) next_id: AtomicU64,
     data_dir: Option<PathBuf>,
+    tombstoned_ids: Arc<RwLock<RoaringTreemap>>,
 }
 
 impl VivvyIndex {
@@ -53,16 +56,23 @@ impl VivvyIndex {
         let shards = Arc::new(shards);
 
         let mut next_id = 1u64;
+        let tombstoned_ids = Arc::new(RwLock::new(RoaringTreemap::new()));
 
         //  Replay uncompacted WAL entries if existing WAL is present
         if let Some(ref path) = wal_path {
             WalWriter::replay(path.as_ref(), |entry| match entry {
                 WalEntry::Insert { id, vector } => {
+                    tombstoned_ids.write().remove(id);
                     let shard = shard_idx(id, NUM_SHARDS);
                     shards[shard].write().insert(id, vector);
                     if id >= next_id {
                         next_id = id.saturating_add(1);
                     }
+                }
+                WalEntry::Delete { id } => {
+                    tombstoned_ids.write().insert(id);
+                    let shard = shard_idx(id, NUM_SHARDS);
+                    shards[shard].write().delete(id);
                 }
             })?;
         }
@@ -136,16 +146,23 @@ impl VivvyIndex {
             handle: None,
             next_id: AtomicU64::new(next_id),
             data_dir,
+            tombstoned_ids: tombstoned_ids.clone(),
         };
 
-        let running = idx.running.clone();
-        let sealed = idx.sealed.clone();
-        let dir = idx.data_dir.clone();
-        let m = metric;
+        let params = CompactorParams {
+            running: idx.running.clone(),
+            dims,
+            shards,
+            sealed,
+            data_dir: idx.data_dir.clone(),
+            wal,
+            metric,
+            tombstoned_ids,
+        };
 
         let h = thread::Builder::new()
             .name("vivvy-compactor".into())
-            .spawn(move || compactor_loop(running, dims, shards, sealed, dir, wal, m))
+            .spawn(move || compactor_loop(params))
             .expect("compactor thread");
         idx.handle = Some(h);
 
@@ -158,6 +175,7 @@ impl VivvyIndex {
             return Err(VivvyError::DimensionMismatch);
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.tombstoned_ids.write().remove(id);
 
         if let Some(ref wal_mutex) = self.wal {
             let mut wal = wal_mutex.lock();
@@ -173,12 +191,15 @@ impl VivvyIndex {
         Ok(id)
     }
 
-    /// Insert with explicit ID, advancing the next_id high-water mark to prevent collisions.
+    /// Insert with explicit ID, replacing any previous node with this ID (upsert semantics).
     pub fn insert_with_id(&self, id: u64, vector: Vec<f32>) -> Result<(), VivvyError> {
         if vector.len() != self.dims {
             return Err(VivvyError::DimensionMismatch);
         }
         self.next_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
+
+        // Clear prior tombstone so the newly inserted vector is active
+        self.tombstoned_ids.write().remove(id);
 
         if let Some(ref wal_mutex) = self.wal {
             let mut wal = wal_mutex.lock();
@@ -193,6 +214,24 @@ impl VivvyIndex {
         Ok(())
     }
 
+    /// Soft-delete an ID from the vector index.
+    ///
+    /// Records a delete entry in the WAL (if enabled), records the ID in `tombstoned_ids`
+    /// (to mask older instances in sealed segments), and marks the node deleted in its
+    /// corresponding shard's HNSW graph.
+    pub fn delete(&self, id: u64) -> Result<bool, VivvyError> {
+        if let Some(ref wal_mutex) = self.wal {
+            let mut wal = wal_mutex.lock();
+            wal.append(&WalEntry::Delete { id })?;
+            wal.commit()?;
+        }
+        self.tombstoned_ids.write().insert(id);
+
+        let shard = shard_idx(id, NUM_SHARDS);
+        let deleted = self.shards[shard].write().delete(id);
+        Ok(deleted)
+    }
+
     /// Insert with metadata fields for filtering
     pub fn insert_with_metadata(
         &self,
@@ -203,6 +242,7 @@ impl VivvyIndex {
             return Err(VivvyError::DimensionMismatch);
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.tombstoned_ids.write().remove(id);
 
         if let Some(ref wal_mutex) = self.wal {
             let mut wal = wal_mutex.lock();
@@ -245,6 +285,13 @@ impl VivvyIndex {
         for v in &vectors {
             if v.len() != self.dims {
                 return Err(VivvyError::DimensionMismatch);
+            }
+        }
+
+        {
+            let mut tombstones = self.tombstoned_ids.write();
+            for id in &ids {
+                tombstones.remove(*id);
             }
         }
 
@@ -301,21 +348,29 @@ impl VivvyIndex {
             return Ok(Vec::new());
         }
 
+        let mut seen_ids = HashSet::new();
         let (mut results, metric) = {
             let mut results = Vec::new();
             let metric = self.shards[0].read().metric();
             for shard in self.shards.iter() {
                 let shard_results = shard.read().search_filtered(query, k, filter_bitmap.as_ref());
-                results.extend(shard_results);
+                for (id, d) in shard_results {
+                    seen_ids.insert(id);
+                    results.push((id, d));
+                }
             }
             (results, metric)
         };
 
-        // Search sealed segments
+        // Search sealed segments (newest to oldest), skipping tombstoned and newer delta instances
+        let tombstones = self.tombstoned_ids.read();
         let sealed_list = self.sealed.load();
-        for seg in sealed_list.iter() {
+        for seg in sealed_list.iter().rev() {
             for idx in 0..seg.num_nodes() {
                 if let Ok(id) = seg.id_at(idx) {
+                    if tombstones.contains(id) || seen_ids.contains(&id) {
+                        continue;
+                    }
                     let passes_filter = filter_bitmap
                         .as_ref()
                         .is_none_or(|bm| bm.contains(id));
@@ -324,6 +379,7 @@ impl VivvyIndex {
                     }
                     if let Ok(v) = seg.vector_at(idx) {
                         let d = distance::compute(metric, query, v);
+                        seen_ids.insert(id);
                         results.push((id, d));
                     }
                 }
@@ -337,34 +393,7 @@ impl VivvyIndex {
 
     /// Search across delta + all sealed segments.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>, VivvyError> {
-        if query.len() != self.dims {
-            return Err(VivvyError::DimensionMismatch);
-        }
-        let (mut results, metric) = {
-            let mut results = Vec::new();
-            let metric = self.shards[0].read().metric();
-            for shard in self.shards.iter() {
-                let shard_results = shard.read().search(query, k);
-                results.extend(shard_results);
-            }
-            (results, metric)
-        };
-
-        let sealed_list = self.sealed.load();
-        for seg in sealed_list.iter() {
-            for idx in 0..seg.num_nodes() {
-                if let Ok(id) = seg.id_at(idx) {
-                    if let Ok(v) = seg.vector_at(idx) {
-                        let d = distance::compute(metric, query, v);
-                        results.push((id, d));
-                    }
-                }
-            }
-        }
-
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        results.truncate(k);
-        Ok(results)
+        self.search_filtered(query, k, None)
     }
 
     #[must_use]
@@ -382,7 +411,7 @@ impl VivvyIndex {
         if let Some(ref dir) = self.data_dir {
             let m = self.shards[0].read().metric();
             let wal_ref = self.wal.as_deref();
-            if let Err(e) = run_compaction(self.dims, &self.shards, &self.sealed, dir, wal_ref, m) {
+            if let Err(e) = run_compaction(self.dims, &self.shards, &self.sealed, dir, wal_ref, m, &self.tombstoned_ids) {
                 warn!("compaction failed: {e}");
             }
         }
@@ -428,7 +457,7 @@ impl Drop for VivvyIndex {
     }
 }
 
-fn compactor_loop(
+struct CompactorParams {
     running: Arc<AtomicBool>,
     dims: usize,
     shards: Arc<Vec<RwLock<HnswIndex>>>,
@@ -436,19 +465,30 @@ fn compactor_loop(
     data_dir: Option<PathBuf>,
     wal: Option<Arc<Mutex<WalWriter>>>,
     metric: Metric,
-) {
+    tombstoned_ids: Arc<RwLock<RoaringTreemap>>,
+}
+
+fn compactor_loop(params: CompactorParams) {
     let threshold = 10_000usize;
     let mut tick_counter = 0u32;
-    while running.load(Ordering::Acquire) {
+    while params.running.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(50));
         tick_counter += 1;
         if tick_counter >= 100 {
             tick_counter = 0;
-            let total_len: usize = shards.iter().map(|s| s.read().len()).sum();
+            let total_len: usize = params.shards.iter().map(|s| s.read().len()).sum();
             if total_len >= threshold {
-                if let Some(ref dir) = data_dir {
-                    let wal_ref = wal.as_deref();
-                    if let Err(e) = run_compaction(dims, &shards, &sealed, dir, wal_ref, metric) {
+                if let Some(ref dir) = params.data_dir {
+                    let wal_ref = params.wal.as_deref();
+                    if let Err(e) = run_compaction(
+                        params.dims,
+                        &params.shards,
+                        &params.sealed,
+                        dir,
+                        wal_ref,
+                        params.metric,
+                        &params.tombstoned_ids,
+                    ) {
                         warn!("compaction failed: {e}");
                     }
                 }
@@ -464,6 +504,7 @@ fn run_compaction(
     data_dir: &Path,
     wal: Option<&Mutex<WalWriter>>,
     metric: Metric,
+    tombstoned_ids: &RwLock<RoaringTreemap>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut entries = Vec::new();
     for shard in shards {
@@ -496,10 +537,15 @@ fn run_compaction(
     manifest.segments.push(seg_filename);
     manifest.save(data_dir)?;
 
-    // Reset WAL to clear compacted delta entries
+    // Reset WAL to clear compacted delta entries, preserving remaining sealed tombstones
     if let Some(wal_mutex) = wal {
         let mut wal_guard = wal_mutex.lock();
         wal_guard.reset()?;
+        let tombstones = tombstoned_ids.read();
+        for id in tombstones.iter() {
+            wal_guard.append(&WalEntry::Delete { id })?;
+        }
+        wal_guard.commit()?;
     }
 
     let new_seg = Arc::new(SealedSegment::open(&seg_path)?);
@@ -661,5 +707,52 @@ mod tests {
         // Verify high-water mark after reopen
         let next_auto = reopened.insert(vec![0.5, 0.5, 0.0]).unwrap();
         assert!(next_auto > 30, "next auto ID must be > 30, got {}", next_auto);
+    }
+
+    #[test]
+    fn test_upsert_replaces_old_vector() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Option::<&Path>::None).unwrap();
+
+        idx.insert_with_id(10, vec![1.0, 0.0, 0.0]).unwrap();
+        idx.insert_with_id(20, vec![0.0, 1.0, 0.0]).unwrap();
+
+        let hits = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(hits[0].0, 10);
+
+        // Update ID 10 to a new position (0, 0, 10)
+        idx.insert_with_id(10, vec![0.0, 0.0, 10.0]).unwrap();
+
+        // Querying at (1, 0, 0) should now find 20 first, NOT stale 10
+        let hits_after = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(hits_after[0].0, 20);
+
+        // Querying at (0, 0, 10) should find 10
+        let hits_new = idx.search(&[0.0, 0.0, 10.0], 1).unwrap();
+        assert_eq!(hits_new[0].0, 10);
+    }
+
+    #[test]
+    fn test_delete_and_sealed_tombstone() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        idx.insert_with_id(10, vec![1.0, 0.0, 0.0]).unwrap();
+        idx.insert_with_id(20, vec![0.0, 1.0, 0.0]).unwrap();
+
+        // Compact into sealed segment
+        idx.compact_now();
+        assert_eq!(idx.num_sealed(), 1);
+
+        // Delete sealed ID 10
+        assert!(idx.delete(10).is_ok());
+
+        let hits = idx.search(&[1.0, 0.0, 0.0], 2).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 20);
     }
 }

@@ -157,16 +157,46 @@ impl VectorIndex for VivvyVectorIndex {
     }
 
     fn remove(&self, memory_id: &str) -> Result<()> {
-        self.tombstones
-            .write()
-            .insert(memory_id.to_string(), true);
+        let num_id = {
+            let mut id_map = self.id_to_u64.write();
+            let mut u64_map = self.u64_to_id.write();
+            self.tombstones
+                .write()
+                .insert(memory_id.to_string(), true);
+            if let Some(id) = id_map.remove(memory_id) {
+                u64_map.remove(&id);
+                Some(id)
+            } else {
+                None
+            }
+        };
+
+        if let Some(id) = num_id {
+            let idx = self.index.read();
+            let _ = idx.delete(id);
+        }
         Ok(())
     }
 
     fn remove_batch(&self, memory_ids: &[&str]) -> Result<()> {
-        let mut tombstones = self.tombstones.write();
-        for id in memory_ids {
-            tombstones.insert(id.to_string(), true);
+        let num_ids: Vec<u64> = {
+            let mut id_map = self.id_to_u64.write();
+            let mut u64_map = self.u64_to_id.write();
+            let mut tombstones = self.tombstones.write();
+            let mut ids = Vec::new();
+            for id_str in memory_ids {
+                tombstones.insert(id_str.to_string(), true);
+                if let Some(id) = id_map.remove(*id_str) {
+                    u64_map.remove(&id);
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+
+        let idx = self.index.read();
+        for id in num_ids {
+            let _ = idx.delete(id);
         }
         Ok(())
     }
@@ -413,5 +443,46 @@ mod tests {
     fn test_vivvy_vector_index() {
         let index = Arc::new(VivvyVectorIndex::new(3, Metric::Cosine).unwrap());
         test_index_contract(index);
+    }
+
+    #[test]
+    fn test_vivvy_vector_index_upsert_moves_candidate() {
+        let index = VivvyVectorIndex::new(3, Metric::Cosine).unwrap();
+        let v1 = vec![1.0, 0.0, 0.0];
+        let v2 = vec![0.0, 1.0, 0.0];
+        let v1_moved = vec![0.0, 0.0, 1.0];
+
+        index.upsert("doc-1", &v1).unwrap();
+        index.upsert("doc-2", &v2).unwrap();
+
+        // Search near original v1
+        let q_old = vec![1.0, 0.05, 0.0];
+        let res1 = index.search(&q_old, 2).unwrap();
+        assert_eq!(res1[0].0, "doc-1");
+        assert!(res1[0].1 < 0.05);
+
+        // Update doc-1 with v1_moved
+        index.upsert("doc-1", &v1_moved).unwrap();
+
+        // Querying near old position should NOT return doc-1 with stale distance
+        let res2 = index.search(&q_old, 2).unwrap();
+        assert_eq!(res2.len(), 2);
+        // doc-2 is at cosine distance 1.0, doc-1 at (0,0,1) is at cosine distance 1.0
+        // doc-1 must NOT have its old ~0.0 distance
+        for (id, dist) in &res2 {
+            if id == "doc-1" {
+                assert!(
+                    *dist > 0.9,
+                    "doc-1 returned stale distance {} near old location",
+                    dist
+                );
+            }
+        }
+
+        // Querying near new position should return doc-1 as top candidate with ~0 distance
+        let q_new = vec![0.0, 0.0, 1.0];
+        let res3 = index.search(&q_new, 2).unwrap();
+        assert_eq!(res3[0].0, "doc-1");
+        assert!(res3[0].1 < 0.001);
     }
 }
