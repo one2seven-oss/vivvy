@@ -19,8 +19,9 @@
 
 use crate::distance::{self, Metric};
 use ordered_float::OrderedFloat;
+use roaring::RoaringBitmap;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct HnswIndex {
@@ -42,6 +43,11 @@ pub struct HnswIndex {
     ml: f32, // 1/ln(M) for level generation
 
     metric: Metric,
+
+    // Map external u64 id -> active internal node index
+    id_to_node: HashMap<u64, usize>,
+    // Tombstoned node indices (either replaced by upsert or explicitly deleted)
+    deleted_nodes: RoaringBitmap,
 }
 
 // ef-search priority-queue element. OrderedFloat so f32 can be Ord.
@@ -83,17 +89,19 @@ impl HnswIndex {
             ef_construction: 200,
             ml: 1.0 / (m as f32).ln(),
             metric,
+            id_to_node: HashMap::new(),
+            deleted_nodes: RoaringBitmap::new(),
         }
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ids.len()
+        self.id_to_node.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.id_to_node.is_empty()
     }
 
     // Geometric: P(level=L) = exp(−L/mL) − exp(−(L+1)/mL).
@@ -105,6 +113,9 @@ impl HnswIndex {
 
     pub fn insert(&mut self, id: u64, vector: Vec<f32>) {
         let idx = self.ids.len();
+        if let Some(old_idx) = self.id_to_node.insert(id, idx) {
+            self.deleted_nodes.insert(old_idx as u32);
+        }
         self.vectors.extend(vector);
         self.ids.push(id);
         let level = self.random_level();
@@ -242,12 +253,26 @@ impl HnswIndex {
         self.metric
     }
 
+    /// Soft-delete an ID from the HNSW index.
+    ///
+    /// The node is tombstoned: it remains traversable during graph searches to preserve
+    /// connectivity, but is excluded from search results and pruned during compaction.
+    pub fn delete(&mut self, id: u64) -> bool {
+        if let Some(idx) = self.id_to_node.remove(&id) {
+            self.deleted_nodes.insert(idx as u32);
+            true
+        } else {
+            false
+        }
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> Vec<(u64, Vec<f32>)> {
         self.ids
             .iter()
             .copied()
             .enumerate()
+            .filter(|(idx, _)| !self.deleted_nodes.contains(*idx as u32))
             .map(|(idx, id)| {
                 let start = idx * self.dims;
                 let end = start + self.dims;
@@ -265,6 +290,8 @@ impl HnswIndex {
         self.levels.clear();
         self.entry = None;
         self.max_level = 0;
+        self.id_to_node.clear();
+        self.deleted_nodes.clear();
         snapshot
     }
 
@@ -285,6 +312,10 @@ impl HnswIndex {
         k: usize,
         filter: Option<&roaring::RoaringTreemap>,
     ) -> Vec<(u64, f32)> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+
         let ep = match self.entry {
             Some(e) => e,
             None => return Vec::new(),
@@ -302,6 +333,7 @@ impl HnswIndex {
             let neighbors = self.ef_search(query, best, ef, 0);
             let mut results: Vec<(u64, f32)> = neighbors
                 .into_iter()
+                .filter(|(idx, _)| !self.deleted_nodes.contains(*idx as u32))
                 .map(|(idx, d)| (self.ids[idx], d))
                 .collect();
 
@@ -340,6 +372,59 @@ mod tests {
         let hits = idx.search(&[1.0, 0.0, 0.0], 1);
         assert!(!hits.is_empty());
         assert_eq!(hits[0].0, 0);
+    }
+
+    #[test]
+    fn test_hnsw_upsert_replaces_old_vector() {
+        let mut idx = HnswIndex::new(3, Metric::L2);
+        // Insert id 42 at (1, 0, 0)
+        idx.insert(42, vec![1.0, 0.0, 0.0]);
+        // Insert id 99 at (0, 1, 0)
+        idx.insert(99, vec![0.0, 1.0, 0.0]);
+        assert_eq!(idx.len(), 2);
+
+        let hits_before = idx.search(&[1.0, 0.0, 0.0], 1);
+        assert_eq!(hits_before[0].0, 42);
+
+        // Move id 42 far away to (0, 0, 10.0)
+        idx.insert(42, vec![0.0, 0.0, 10.0]);
+        assert_eq!(idx.len(), 2);
+
+        // Searching near (1, 0, 0) should now rank 99 first, NOT 42
+        let hits_old_pos = idx.search(&[1.0, 0.0, 0.0], 1);
+        assert_eq!(hits_old_pos[0].0, 99);
+
+        // Searching near (0, 0, 10.0) should return 42
+        let hits_new_pos = idx.search(&[0.0, 0.0, 10.0], 1);
+        assert_eq!(hits_new_pos[0].0, 42);
+
+        // Snapshot only contains 2 active items (with latest vector for 42)
+        let snap = idx.snapshot();
+        assert_eq!(snap.len(), 2);
+        let v42 = snap.iter().find(|(id, _)| *id == 42).unwrap();
+        assert_eq!(v42.1, vec![0.0, 0.0, 10.0]);
+    }
+
+    #[test]
+    fn test_hnsw_delete() {
+        let mut idx = HnswIndex::new(3, Metric::L2);
+        idx.insert(10, vec![1.0, 0.0, 0.0]);
+        idx.insert(20, vec![0.0, 1.0, 0.0]);
+        assert_eq!(idx.len(), 2);
+
+        assert!(idx.delete(10));
+        assert_eq!(idx.len(), 1);
+        assert!(!idx.delete(10));
+
+        let hits = idx.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 20);
+
+        // Drain should only produce active item 20
+        let drained = idx.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].0, 20);
+        assert_eq!(idx.len(), 0);
     }
 
     #[test]

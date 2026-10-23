@@ -24,10 +24,25 @@ impl FlatIndex {
         }
     }
 
-    // IDs need not be unique, but duplicate IDs make distance_to() undefined.
+    // IDs are unique; re-inserting an existing ID replaces its vector (upsert semantics).
     pub fn insert(&mut self, id: u64, vector: Vec<f32>) {
-        self.ids.push(id);
-        self.vectors.push(vector);
+        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
+            self.vectors[pos] = vector;
+        } else {
+            self.ids.push(id);
+            self.vectors.push(vector);
+        }
+    }
+
+    /// Remove a vector by its ID. Returns true if the ID existed and was removed.
+    pub fn remove(&mut self, id: u64) -> bool {
+        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
+            self.ids.swap_remove(pos);
+            self.vectors.swap_remove(pos);
+            true
+        } else {
+            false
+        }
     }
 
     #[must_use]
@@ -77,5 +92,26 @@ mod tests {
         let hits = idx.search(&[0.0, 0.0], 2);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, 0);
+    }
+
+    #[test]
+    fn test_flat_upsert_and_remove() {
+        let mut idx = FlatIndex::new(Metric::L2);
+        idx.insert(42, vec![10.0, 0.0]);
+        assert_eq!(idx.len(), 1);
+        // Metric::L2 computes squared Euclidean distance: 10^2 = 100.0
+        assert_eq!(idx.distance_to(42, &[0.0, 0.0]), Some(100.0));
+
+        // Re-inserting the same ID updates the vector in place (2^2 = 4.0)
+        idx.insert(42, vec![2.0, 0.0]);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.distance_to(42, &[0.0, 0.0]), Some(4.0));
+
+        // Remove the ID
+        assert!(idx.remove(42));
+        assert_eq!(idx.len(), 0);
+        assert!(idx.is_empty());
+        assert_eq!(idx.distance_to(42, &[0.0, 0.0]), None);
+        assert!(!idx.remove(42));
     }
 }
