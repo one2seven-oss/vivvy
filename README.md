@@ -27,6 +27,7 @@ A local, durable long-term memory (LTM) runtime and single-machine vector engine
 | **`vivvy-py`** | [`py/`](py) | PyO3 Python bindings exposing `vivvy.MemoryStore` and low-level `vivvy.Index` with GIL release. |
 | **`vivvy-ffi`** | [`ffi/`](ffi) | `extern "C"` layer (staticlib + cdylib) exposing `MemoryStore` as a panic-safe, JSON-in/JSON-out C ABI — see [`go/include/vivvy.h`](go/include/vivvy.h). |
 | **`vivvy-go`** | [`go/`](go) | Go bindings over `vivvy-ffi` via cgo and a pre-compiled static library — `go get`, no Rust toolchain or daemon required. |
+| **`vivvy-ts`** | [`ts/`](ts) | TypeScript & Node.js bindings via Node-API — zero-copy `Float32Array`, async worker pool, and typed embedder adapters. |
 | **`bench`** | [`sim/`](sim) | Synthetic data benchmark suite for QPS, latency, and ground-truth recall verification. |
 
 ---
@@ -126,6 +127,36 @@ for memory_id, content, score in results:
     print(f"[{score:.2f}] {content}")
 ```
 
+#### TypeScript & Node.js Example
+
+```typescript
+import { MemoryStore, OpenAIEmbedder } from 'vivvy';
+
+const embedder = new OpenAIEmbedder({ model: 'text-embedding-3-small' });
+const store = await MemoryStore.open({ path: './agent_data', embedder });
+
+// Store observation into durable agent memory
+const memoryId = await store.rememberText({
+  tenantId: 'acme',
+  namespace: 'support',
+  content: 'User prefers concise technical responses.',
+  kind: 'preference',
+  importance: 0.9,
+});
+
+// Recall relevant memories with hybrid text + vector search
+const recall = await store.recallText({
+  tenantId: 'acme',
+  namespace: 'support',
+  queryText: 'concise technical',
+  topK: 5,
+});
+
+for (const item of recall.items) {
+  console.log(`[${item.score.toFixed(2)}] ${item.content}`);
+}
+```
+
 ---
 
 ## Build & Verification
@@ -142,6 +173,9 @@ maturin develop --manifest-path py/Cargo.toml
 
 # Run Python PyO3 integration test suite (44 tests)
 pytest py/
+
+# Build and run TypeScript test suite (Node.js & Bun)
+make ts-test
 
 # Run performance benchmark suite
 cargo run --release --package bench

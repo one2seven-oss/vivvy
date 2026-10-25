@@ -32,7 +32,7 @@ GO_DIR := go
 GO_LIB_DIR := go/lib
 
 .PHONY: all help native go-libs go-build go-test go-test-race go-vet go-fmt-check \
-        header leak-check clean-libs \
+        header leak-check clean-libs ts-build ts-test \
         linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 
 all: native go-build go-test
@@ -127,3 +127,13 @@ header:
 
 clean-libs:
 	rm -f $(GO_LIB_DIR)/*.a
+
+# -- TypeScript / JavaScript side (ts/) ------------------------------------------------------
+
+ts-build:
+	$(CARGO) build -p $(FFI_CRATE) --release
+	gcc -O3 -shared -fPIC -I/usr/include/node -I./go/include ts/binding/vivvy_napi.c target/release/libvivvy_ffi.a -lpthread -ldl -lm -o ts/vivvy.node
+	@echo "Built ts/vivvy.node successfully."
+
+ts-test: ts-build
+	node --test ts/tests/*.test.ts

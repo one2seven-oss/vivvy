@@ -61,6 +61,7 @@ This document serves as the authoritative, production-grade guide for integratin
    - [Rust Guide (`vec/`, `ltm/`, `ffi/`, `sim/`)](#82-rust-guide-vec-ltm-ffi-sim)
    - [Python Guide (`py/`)](#83-python-guide-py)
    - [Go Guide (`go/`)](#84-go-guide-go)
+   - [TypeScript & JavaScript Guide (`ts/`)](#85-typescript--javascript-guide-ts)
 9. [Licensing & Commercial Terms (BSL-1.1)](#9-licensing--commercial-terms-bsl-11)
    - [Business Source License 1.1 Summary](#business-source-license-11-summary)
    - [Additional Use Grant Parameters](#additional-use-grant-parameters)
@@ -1251,6 +1252,34 @@ go vet ./...         # must be clean
 go test -v ./...     # -race for the concurrency tests; -short to skip the multi-second stress test
 ```
 All three are wired into `make go-fmt-check` / `make go-vet` / `make go-test(-race)` and into `.github/workflows/go-ffi.yml` on every push/PR. Every test that opens a store uses `t.TempDir()` (never a fixed path) and registers teardown via `t.Cleanup(...)` rather than a bare `defer` at the top of a long test function. A concurrency-sensitive change needs a test that races real goroutines against a shared `*Store` — see `TestConcurrentInsertAndRecall` and `TestConcurrentCloseIsSafe` in `go/vivvy_test.go` — and run under `-race`, not just inspected by eye. A test that only exists to catch a coarse regression (many iterations, multi-second runtime) belongs behind `testing.Short()`, as `TestMemoryStressNoUnboundedGrowth` demonstrates, so `go test -short` stays fast for everyday iteration.
+
+---
+
+### 8.5 TypeScript & JavaScript Guide (`ts/`)
+
+**Binding philosophy.** `ts/src/store.ts` wraps the Node-API native addon (`ts/binding/vivvy_napi.c`), translating JS/TS values into FFI JSON envelopes and raw `Float32Array` buffers. In accordance with §8.1 Rule 4, all storage, indexing, scoring, and journal logic lives in `vivvy-memory` and `vivvy-core`.
+
+**Asynchronous event loop offloading.** Vector distance calculations and SQLite WAL commits must never block Node's single-threaded event loop. All asynchronous operations (`store.remember`, `store.recall`, `store.formatContext`) dispatch onto worker threads via `napi_create_async_work` and return native Promises.
+
+**Zero-copy vector passing.** Embedding vectors are ingested directly as `Float32Array` typed arrays, passing contiguous memory slices directly to the C ABI without JSON serialization overhead.
+
+**Error handling.** Every failure thrown by the native layer surfaces as a typed `VivvyError` whose `.code` property maps 1:1 to `VivvyErrorCode` (mirroring `vivvy_memory::ErrorCode` and `vivvy.h`). Callers branch on numeric codes rather than parsing string messages:
+```typescript
+try {
+  await store.remember(options, vector);
+} catch (err) {
+  if (err instanceof VivvyError && err.code === VivvyErrorCode.RevisionConflict) {
+    // retry with latest revision
+  }
+}
+```
+
+**Testing & Build.**
+```bash
+make ts-build       # compile vivvy-ffi and ts/vivvy.node
+make ts-test        # execute complete Node.js test suite across ts/tests/*.test.ts
+bun test ts/tests/  # execute under Bun test runner
+```
 
 ---
 
