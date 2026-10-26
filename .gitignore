@@ -54,3 +54,5 @@ Thumbs.db
 *.swo
 *~
 ts/vivvy.node
+
+/scripts
