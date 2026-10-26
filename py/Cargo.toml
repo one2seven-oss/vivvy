@@ -1,6 +1,6 @@
 [package]
 name = "vivvy-py"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 license = "BUSL-1.1"
 description = "Python bindings for Vivvy vector search engine"
