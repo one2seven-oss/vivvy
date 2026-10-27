@@ -348,27 +348,34 @@ impl VivvyIndex {
             return Ok(Vec::new());
         }
 
-        let mut seen_ids = HashSet::new();
+        // An ID in the mutable delta is newer than every sealed instance of that
+        // ID. Populate this from *all* live delta nodes, not just the delta
+        // search hits: a moved vector can be outside the delta top-k for a query
+        // near its old position, and must still mask that stale sealed vector.
+        let shard_guards: Vec<_> = self.shards.iter().map(|shard| shard.read()).collect();
+        let mut seen_ids: HashSet<u64> = shard_guards
+            .iter()
+            .flat_map(|shard| shard.active_ids())
+            .collect();
         let (mut results, metric) = {
             let mut results = Vec::new();
-            let metric = self.shards[0].read().metric();
-            for shard in self.shards.iter() {
-                let shard_results = shard.read().search_filtered(query, k, filter_bitmap.as_ref());
-                for (id, d) in shard_results {
-                    seen_ids.insert(id);
-                    results.push((id, d));
-                }
+            let metric = shard_guards[0].metric();
+            for shard in &shard_guards {
+                results.extend(shard.search_filtered(query, k, filter_bitmap.as_ref()));
             }
             (results, metric)
         };
 
-        // Search sealed segments (newest to oldest), skipping tombstoned and newer delta instances
+        // Search sealed segments newest to oldest. Record an ID as soon as its
+        // newest sealed copy is encountered, even when that vector is not a
+        // candidate. This prevents an older copy from becoming searchable simply
+        // because the newer copy was outside the requested top-k.
         let tombstones = self.tombstoned_ids.read();
         let sealed_list = self.sealed.load();
         for seg in sealed_list.iter().rev() {
             for idx in 0..seg.num_nodes() {
                 if let Ok(id) = seg.id_at(idx) {
-                    if tombstones.contains(id) || seen_ids.contains(&id) {
+                    if tombstones.contains(id) || !seen_ids.insert(id) {
                         continue;
                     }
                     let passes_filter = filter_bitmap
@@ -731,6 +738,33 @@ mod tests {
         // Querying at (0, 0, 10) should find 10
         let hits_new = idx.search(&[0.0, 0.0, 10.0], 1).unwrap();
         assert_eq!(hits_new[0].0, 10);
+    }
+
+    #[test]
+    fn test_upsert_masks_old_sealed_vector_when_new_vector_is_not_a_delta_hit() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        idx.insert_with_id(10, vec![1.0, 0.0, 0.0]).unwrap();
+        idx.compact_now();
+
+        // Move 10 far away, then add enough nearby delta vectors that 10 is not
+        // returned by the delta graph for this query.
+        idx.insert_with_id(10, vec![0.0, 0.0, 100.0]).unwrap();
+        for id in 20..140 {
+            idx.insert_with_id(id, vec![1.0, 0.0, 0.0]).unwrap();
+        }
+
+        let hits = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_ne!(hits[0].0, 10, "old sealed vector must not be returned");
+
+        // The same invariant must hold after the updated vector is sealed too.
+        idx.compact_now();
+        let hits_after_compaction = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_ne!(hits_after_compaction[0].0, 10);
     }
 
     #[test]

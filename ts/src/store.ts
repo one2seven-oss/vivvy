@@ -26,6 +26,17 @@ function loadNativeAddon() {
     ? require
     : createRequire(import.meta.url || `file://${process.cwd()}/`);
 
+  // 1. Try loading platform-specific prebuilt package (installed via optionalDependencies on npm)
+  const platform = process.platform;
+  const arch = process.arch;
+  const platformPkg = `@vivvy/core-${platform}-${arch}`;
+  try {
+    return req(platformPkg);
+  } catch {
+    // fallback to local binary resolution
+  }
+
+  // 2. Try loading local build artifacts (local development and custom builds)
   const possiblePaths = [
     path.join(currentDir, '../vivvy.node'),
     path.join(currentDir, 'vivvy.node'),
