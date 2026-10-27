@@ -99,6 +99,12 @@ impl HnswIndex {
         self.id_to_node.len()
     }
 
+    /// Number of physical nodes, including nodes superseded by an upsert.
+    /// Used by compaction scheduling to bound memory consumed by tombstones.
+    pub(crate) fn physical_len(&self) -> usize {
+        self.ids.len()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.id_to_node.is_empty()
