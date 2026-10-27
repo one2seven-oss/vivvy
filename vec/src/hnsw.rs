@@ -99,9 +99,30 @@ impl HnswIndex {
         self.id_to_node.len()
     }
 
+    /// Number of physical nodes, including nodes superseded by an upsert.
+    /// Used by compaction scheduling to bound memory consumed by tombstones.
+    pub(crate) fn physical_len(&self) -> usize {
+        self.ids.len()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.id_to_node.is_empty()
+    }
+
+    /// Iterate the IDs of all live nodes.
+    ///
+    /// This deliberately excludes superseded and deleted nodes. Callers that merge
+    /// this delta graph with older immutable segments use it to ensure an older
+    /// copy of an ID cannot reappear merely because its newer vector did not make
+    /// the delta graph's top-k results.
+    pub(crate) fn active_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.ids
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(idx, _)| !self.deleted_nodes.contains(*idx as u32))
+            .map(|(_, id)| id)
     }
 
     // Geometric: P(level=L) = exp(−L/mL) − exp(−(L+1)/mL).

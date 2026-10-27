@@ -41,6 +41,9 @@ pub struct VivvyIndex {
     pub(crate) next_id: AtomicU64,
     data_dir: Option<PathBuf>,
     tombstoned_ids: Arc<RwLock<RoaringTreemap>>,
+    // Serializes mutations with compaction so a WAL entry cannot be lost while
+    // the compactor snapshots the delta and resets the WAL.
+    mutation_lock: Arc<Mutex<()>>,
 }
 
 impl VivvyIndex {
@@ -147,6 +150,7 @@ impl VivvyIndex {
             next_id: AtomicU64::new(next_id),
             data_dir,
             tombstoned_ids: tombstoned_ids.clone(),
+            mutation_lock: Arc::new(Mutex::new(())),
         };
 
         let params = CompactorParams {
@@ -156,8 +160,8 @@ impl VivvyIndex {
             sealed,
             data_dir: idx.data_dir.clone(),
             wal,
-            metric,
             tombstoned_ids,
+            mutation_lock: idx.mutation_lock.clone(),
         };
 
         let h = thread::Builder::new()
@@ -174,6 +178,7 @@ impl VivvyIndex {
         if vector.len() != self.dims {
             return Err(VivvyError::DimensionMismatch);
         }
+        let _mutation_guard = self.mutation_lock.lock();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.tombstoned_ids.write().remove(id);
 
@@ -196,6 +201,7 @@ impl VivvyIndex {
         if vector.len() != self.dims {
             return Err(VivvyError::DimensionMismatch);
         }
+        let _mutation_guard = self.mutation_lock.lock();
         self.next_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
 
         // Clear prior tombstone so the newly inserted vector is active
@@ -220,6 +226,7 @@ impl VivvyIndex {
     /// (to mask older instances in sealed segments), and marks the node deleted in its
     /// corresponding shard's HNSW graph.
     pub fn delete(&self, id: u64) -> Result<bool, VivvyError> {
+        let _mutation_guard = self.mutation_lock.lock();
         if let Some(ref wal_mutex) = self.wal {
             let mut wal = wal_mutex.lock();
             wal.append(&WalEntry::Delete { id })?;
@@ -241,6 +248,7 @@ impl VivvyIndex {
         if vector.len() != self.dims {
             return Err(VivvyError::DimensionMismatch);
         }
+        let _mutation_guard = self.mutation_lock.lock();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.tombstoned_ids.write().remove(id);
 
@@ -276,6 +284,7 @@ impl VivvyIndex {
         vectors: Vec<Vec<f32>>,
         metadata: Option<Vec<Vec<(String, String)>>>,
     ) -> Result<Vec<u64>, VivvyError> {
+        let _mutation_guard = self.mutation_lock.lock();
         let mut ids = Vec::with_capacity(vectors.len());
         for _ in 0..vectors.len() {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -348,27 +357,34 @@ impl VivvyIndex {
             return Ok(Vec::new());
         }
 
-        let mut seen_ids = HashSet::new();
+        // An ID in the mutable delta is newer than every sealed instance of that
+        // ID. Populate this from *all* live delta nodes, not just the delta
+        // search hits: a moved vector can be outside the delta top-k for a query
+        // near its old position, and must still mask that stale sealed vector.
+        let shard_guards: Vec<_> = self.shards.iter().map(|shard| shard.read()).collect();
+        let mut seen_ids: HashSet<u64> = shard_guards
+            .iter()
+            .flat_map(|shard| shard.active_ids())
+            .collect();
         let (mut results, metric) = {
             let mut results = Vec::new();
-            let metric = self.shards[0].read().metric();
-            for shard in self.shards.iter() {
-                let shard_results = shard.read().search_filtered(query, k, filter_bitmap.as_ref());
-                for (id, d) in shard_results {
-                    seen_ids.insert(id);
-                    results.push((id, d));
-                }
+            let metric = shard_guards[0].metric();
+            for shard in &shard_guards {
+                results.extend(shard.search_filtered(query, k, filter_bitmap.as_ref()));
             }
             (results, metric)
         };
 
-        // Search sealed segments (newest to oldest), skipping tombstoned and newer delta instances
+        // Search sealed segments newest to oldest. Record an ID as soon as its
+        // newest sealed copy is encountered, even when that vector is not a
+        // candidate. This prevents an older copy from becoming searchable simply
+        // because the newer copy was outside the requested top-k.
         let tombstones = self.tombstoned_ids.read();
         let sealed_list = self.sealed.load();
         for seg in sealed_list.iter().rev() {
             for idx in 0..seg.num_nodes() {
                 if let Ok(id) = seg.id_at(idx) {
-                    if tombstones.contains(id) || seen_ids.contains(&id) {
+                    if tombstones.contains(id) || !seen_ids.insert(id) {
                         continue;
                     }
                     let passes_filter = filter_bitmap
@@ -409,11 +425,25 @@ impl VivvyIndex {
     /// Force immediate compaction.
     pub fn compact_now(&self) {
         if let Some(ref dir) = self.data_dir {
-            let m = self.shards[0].read().metric();
             let wal_ref = self.wal.as_deref();
-            if let Err(e) = run_compaction(self.dims, &self.shards, &self.sealed, dir, wal_ref, m, &self.tombstoned_ids) {
+            if let Err(e) = run_compaction(
+                self.dims,
+                &self.shards,
+                &self.sealed,
+                dir,
+                wal_ref,
+                &self.tombstoned_ids,
+                &self.mutation_lock,
+            ) {
                 warn!("compaction failed: {e}");
             }
+        } else if let Err(e) = run_in_memory_compaction(
+            self.dims,
+            &self.shards,
+            &self.tombstoned_ids,
+            &self.mutation_lock,
+        ) {
+            warn!("in-memory compaction failed: {e}");
         }
     }
 
@@ -464,8 +494,8 @@ struct CompactorParams {
     sealed: Arc<ArcSwap<Vec<Arc<SealedSegment>>>>,
     data_dir: Option<PathBuf>,
     wal: Option<Arc<Mutex<WalWriter>>>,
-    metric: Metric,
     tombstoned_ids: Arc<RwLock<RoaringTreemap>>,
+    mutation_lock: Arc<Mutex<()>>,
 }
 
 fn compactor_loop(params: CompactorParams) {
@@ -476,8 +506,15 @@ fn compactor_loop(params: CompactorParams) {
         tick_counter += 1;
         if tick_counter >= 100 {
             tick_counter = 0;
-            let total_len: usize = params.shards.iter().map(|s| s.read().len()).sum();
-            if total_len >= threshold {
+            // Use physical node count, not live-ID count: repeated upserts of a
+            // single ID create tombstoned graph nodes that must still trigger
+            // compaction and reclamation.
+            let physical_len: usize = params
+                .shards
+                .iter()
+                .map(|shard| shard.read().physical_len())
+                .sum();
+            if physical_len >= threshold {
                 if let Some(ref dir) = params.data_dir {
                     let wal_ref = params.wal.as_deref();
                     if let Err(e) = run_compaction(
@@ -486,11 +523,18 @@ fn compactor_loop(params: CompactorParams) {
                         &params.sealed,
                         dir,
                         wal_ref,
-                        params.metric,
                         &params.tombstoned_ids,
+                        &params.mutation_lock,
                     ) {
                         warn!("compaction failed: {e}");
                     }
+                } else if let Err(e) = run_in_memory_compaction(
+                    params.dims,
+                    &params.shards,
+                    &params.tombstoned_ids,
+                    &params.mutation_lock,
+                ) {
+                    warn!("in-memory compaction failed: {e}");
                 }
             }
         }
@@ -503,64 +547,126 @@ fn run_compaction(
     sealed: &ArcSwap<Vec<Arc<SealedSegment>>>,
     data_dir: &Path,
     wal: Option<&Mutex<WalWriter>>,
-    metric: Metric,
     tombstoned_ids: &RwLock<RoaringTreemap>,
+    mutation_lock: &Mutex<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Keep writers out until the replacement segment and WAL reset form one
+    // durable state. The old delta remains searchable until that point, so an
+    // I/O failure cannot discard live vectors.
+    let _mutation_guard = mutation_lock.lock();
     let mut entries = Vec::new();
     for shard in shards {
-        let mut old = {
-            let mut guard = shard.write();
-            let fresh = HnswIndex::new(dims, metric);
-            std::mem::replace(&mut *guard, fresh)
-        };
-        entries.extend(old.drain());
+        entries.extend(shard.read().snapshot());
     }
-    if entries.is_empty() {
+
+    let previous_segments = sealed.load_full();
+    let previous_manifest =
+        Manifest::load(data_dir)?.unwrap_or_else(|| Manifest::new(Vec::new()));
+    let tombstones = tombstoned_ids.read();
+    let mut seen_ids: HashSet<u64> = entries.iter().map(|(id, _)| *id).collect();
+
+    // Preserve only the newest live sealed version of each ID. Delta vectors
+    // take precedence over every sealed copy, which physically reclaims vectors
+    // superseded by insert_with_id.
+    for seg in previous_segments.iter().rev() {
+        for idx in 0..seg.num_nodes() {
+            let id = seg.id_at(idx)?;
+            if tombstones.contains(id) || !seen_ids.insert(id) {
+                continue;
+            }
+            entries.push((id, seg.vector_at(idx)?.to_vec()));
+        }
+    }
+    drop(tombstones);
+
+    if entries.is_empty() && previous_manifest.segments.is_empty() {
         return Ok(());
     }
-    info!("compacting {} vectors into sealed segment", entries.len());
+    info!(
+        "compacting {} live vectors into a replacement sealed segment",
+        entries.len()
+    );
 
-    let seg_filename = format!("seg-{}.vivvy", timestamp_ns());
-    let seg_path = data_dir.join(&seg_filename);
-    let file = std::fs::File::create(&seg_path)?;
-    let writer = BufWriter::new(file.try_clone()?);
+    let (new_manifest, new_sealed) = if entries.is_empty() {
+        (Manifest::new(Vec::new()), Vec::new())
+    } else {
+        let seg_filename = format!("seg-{}.vivvy", timestamp_ns());
+        let seg_path = data_dir.join(&seg_filename);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&seg_path)?;
+        let writer = BufWriter::new(file.try_clone()?);
 
-    let mut seg_writer = SegmentWriter::new(writer, dims as u32, 16, 32);
-    for (id, vector) in &entries {
-        seg_writer.push(*id, 0, vec![Vec::new()], vector.clone())?;
+        let mut seg_writer = SegmentWriter::new(writer, dims as u32, 16, 32);
+        for (id, vector) in &entries {
+            seg_writer.push(*id, 0, vec![Vec::new()], vector.clone())?;
+        }
+        seg_writer.write()?;
+        file.sync_all()?;
+
+        (
+            Manifest::new(vec![seg_filename]),
+            vec![Arc::new(SealedSegment::open(&seg_path)?)],
+        )
+    };
+
+    // The manifest is written atomically before old files are retired. A crash
+    // before this step leaves only an orphan; a crash after it has a complete,
+    // self-contained replacement segment to recover from.
+    new_manifest.save(data_dir)?;
+    sealed.store(Arc::new(new_sealed));
+
+    for shard in shards {
+        shard.write().drain();
     }
-    seg_writer.write()?;
-    drop(file);
 
-    // Atomically record newly sealed segment in manifest
-    let mut manifest = Manifest::load(data_dir)?.unwrap_or_else(|| Manifest::new(Vec::new()));
-    manifest.segments.push(seg_filename);
-    manifest.save(data_dir)?;
-
-    // Reset WAL to clear compacted delta entries, preserving remaining sealed tombstones
     if let Some(wal_mutex) = wal {
         let mut wal_guard = wal_mutex.lock();
         wal_guard.reset()?;
-        let tombstones = tombstoned_ids.read();
-        for id in tombstones.iter() {
-            wal_guard.append(&WalEntry::Delete { id })?;
-        }
         wal_guard.commit()?;
     }
+    tombstoned_ids.write().clear();
 
-    let new_seg = Arc::new(SealedSegment::open(&seg_path)?);
-
-    sealed.rcu(|list| {
-        let mut new_list = (**list).clone();
-        new_list.push(new_seg.clone());
-        new_list
-    });
+    // Unlink only files that are no longer reachable from the new manifest.
+    // An unlink failure leaves a harmless orphan and must not undo compaction.
+    for filename in previous_manifest.segments {
+        let path = data_dir.join(filename);
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!("failed to remove obsolete segment {:?}: {}", path, e);
+            }
+        }
+    }
 
     info!(
-        "sealed segment written: {} nodes at {:?}",
+        "compaction complete: {} live vectors, {} obsolete segments reclaimed",
         entries.len(),
-        seg_path
+        previous_segments.len()
     );
+    Ok(())
+}
+
+fn run_in_memory_compaction(
+    dims: usize,
+    shards: &[RwLock<HnswIndex>],
+    tombstoned_ids: &RwLock<RoaringTreemap>,
+    mutation_lock: &Mutex<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _mutation_guard = mutation_lock.lock();
+    for shard in shards {
+        let mut current = shard.write();
+        let metric = current.metric();
+        let live_entries = current.snapshot();
+        let mut rebuilt = HnswIndex::new(dims, metric);
+        for (id, vector) in live_entries {
+            rebuilt.insert(id, vector);
+        }
+        *current = rebuilt;
+    }
+    // Without sealed segments there is nothing left for these tombstones to
+    // mask; the rebuilt delta already excludes their deleted nodes.
+    tombstoned_ids.write().clear();
     Ok(())
 }
 
@@ -612,6 +718,66 @@ mod tests {
         let hits = idx.search(&[3.0, 0.0, 0.0], 1).unwrap();
         assert!(!hits.is_empty());
         drop(idx);
+    }
+
+    #[test]
+    fn test_compaction_reclaims_superseded_sealed_segments() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        idx.insert_with_id(10, vec![1.0, 0.0, 0.0]).unwrap();
+        idx.insert_with_id(20, vec![0.0, 1.0, 0.0]).unwrap();
+        idx.compact_now();
+
+        let segment_count = || {
+            std::fs::read_dir(&segments_dir)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("vivvy"))
+                .count()
+        };
+        assert_eq!(segment_count(), 1);
+
+        idx.insert_with_id(10, vec![0.0, 0.0, 100.0]).unwrap();
+        idx.compact_now();
+
+        assert_eq!(idx.num_sealed(), 1);
+        assert_eq!(segment_count(), 1, "obsolete segment file must be reclaimed");
+        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+        assert_eq!(idx.search(&[1.0, 0.0, 0.0], 1).unwrap()[0].0, 20);
+
+        drop(idx);
+        let reopened = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        assert_eq!(reopened.num_sealed(), 1);
+        assert_eq!(reopened.search(&[0.0, 0.0, 100.0], 1).unwrap()[0].0, 10);
+    }
+
+    #[test]
+    fn test_in_memory_compaction_reclaims_upsert_tombstones() {
+        let idx = VivvyIndex::new(3, Metric::L2, None::<&Path>, None::<&Path>).unwrap();
+        for value in 0..10 {
+            idx.insert_with_id(10, vec![value as f32, 0.0, 0.0]).unwrap();
+        }
+
+        let physical_before: usize = idx
+            .shards
+            .iter()
+            .map(|shard| shard.read().physical_len())
+            .sum();
+        assert_eq!(physical_before, 10);
+
+        idx.compact_now();
+
+        let physical_after: usize = idx
+            .shards
+            .iter()
+            .map(|shard| shard.read().physical_len())
+            .sum();
+        assert_eq!(physical_after, 1);
+        assert_eq!(idx.search(&[9.0, 0.0, 0.0], 1).unwrap()[0].0, 10);
     }
 
     #[test]
@@ -731,6 +897,33 @@ mod tests {
         // Querying at (0, 0, 10) should find 10
         let hits_new = idx.search(&[0.0, 0.0, 10.0], 1).unwrap();
         assert_eq!(hits_new[0].0, 10);
+    }
+
+    #[test]
+    fn test_upsert_masks_old_sealed_vector_when_new_vector_is_not_a_delta_hit() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        idx.insert_with_id(10, vec![1.0, 0.0, 0.0]).unwrap();
+        idx.compact_now();
+
+        // Move 10 far away, then add enough nearby delta vectors that 10 is not
+        // returned by the delta graph for this query.
+        idx.insert_with_id(10, vec![0.0, 0.0, 100.0]).unwrap();
+        for id in 20..140 {
+            idx.insert_with_id(id, vec![1.0, 0.0, 0.0]).unwrap();
+        }
+
+        let hits = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_ne!(hits[0].0, 10, "old sealed vector must not be returned");
+
+        // The same invariant must hold after the updated vector is sealed too.
+        idx.compact_now();
+        let hits_after_compaction = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
+        assert_ne!(hits_after_compaction[0].0, 10);
     }
 
     #[test]
