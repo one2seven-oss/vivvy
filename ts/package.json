@@ -1,6 +1,6 @@
 {
   "name": "vivvy",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "description": "Local, durable, single-machine vector engine and long-term agent memory for TypeScript and Node.js",
   "type": "module",
   "main": "./src/index.ts",
