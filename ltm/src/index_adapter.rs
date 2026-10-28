@@ -60,11 +60,12 @@ pub struct VivvyVectorIndex {
 
 impl VivvyVectorIndex {
     pub fn new(dims: usize, metric: Metric) -> Result<Self> {
-        let vivvy_idx = VivvyIndex::new(dims, metric, None::<&str>, None::<&str>)
-            .map_err(|e| MemoryError::DatabaseError {
+        let vivvy_idx = VivvyIndex::new(dims, metric, None::<&str>, None::<&str>).map_err(|e| {
+            MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
                 message: format!("Failed to create VivvyIndex: {:?}", e),
-            })?;
+            }
+        })?;
 
         Ok(Self {
             dims,
@@ -160,9 +161,7 @@ impl VectorIndex for VivvyVectorIndex {
         let num_id = {
             let mut id_map = self.id_to_u64.write();
             let mut u64_map = self.u64_to_id.write();
-            self.tombstones
-                .write()
-                .insert(memory_id.to_string(), true);
+            self.tombstones.write().insert(memory_id.to_string(), true);
             if let Some(id) = id_map.remove(memory_id) {
                 u64_map.remove(&id);
                 Some(id)
@@ -257,10 +256,12 @@ impl VectorIndex for VivvyVectorIndex {
     }
 
     fn rebuild<'a>(&self, records: Box<dyn Iterator<Item = &'a MemoryRecord> + 'a>) -> Result<()> {
-        let new_idx = VivvyIndex::new(self.dims, self.metric, None::<&str>, None::<&str>)
-            .map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to create new VivvyIndex during rebuild: {:?}", e),
+        let new_idx =
+            VivvyIndex::new(self.dims, self.metric, None::<&str>, None::<&str>).map_err(|e| {
+                MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to create new VivvyIndex during rebuild: {:?}", e),
+                }
             })?;
 
         let mut new_id_map = HashMap::new();

@@ -44,10 +44,7 @@ impl FilterIndex {
     // Insert id → bitmap[field][value]. Idempotent if already set.
     pub fn insert(&mut self, id: u64, field: &str, value: &str) {
         let field_map = self.index.entry(field.to_string()).or_default();
-        field_map
-            .entry(value.to_string())
-            .or_default()
-            .insert(id);
+        field_map.entry(value.to_string()).or_default().insert(id);
     }
 
     // Evaluate the expression tree bottom-up.

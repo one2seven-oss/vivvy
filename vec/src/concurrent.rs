@@ -202,7 +202,8 @@ impl VivvyIndex {
             return Err(VivvyError::DimensionMismatch);
         }
         let _mutation_guard = self.mutation_lock.lock();
-        self.next_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
+        self.next_id
+            .fetch_max(id.saturating_add(1), Ordering::SeqCst);
 
         // Clear prior tombstone so the newly inserted vector is active
         self.tombstoned_ids.write().remove(id);
@@ -387,9 +388,7 @@ impl VivvyIndex {
                     if tombstones.contains(id) || !seen_ids.insert(id) {
                         continue;
                     }
-                    let passes_filter = filter_bitmap
-                        .as_ref()
-                        .is_none_or(|bm| bm.contains(id));
+                    let passes_filter = filter_bitmap.as_ref().is_none_or(|bm| bm.contains(id));
                     if !passes_filter {
                         continue;
                     }
@@ -458,7 +457,8 @@ impl VivvyIndex {
                 let manifest_src = Manifest::manifest_path(dir);
                 if manifest_src.exists() {
                     let manifest_dst = Manifest::manifest_path(target_dir);
-                    std::fs::copy(&manifest_src, &manifest_dst).map_err(|e| VivvyError::Wal(WalError::Io(e)))?;
+                    std::fs::copy(&manifest_src, &manifest_dst)
+                        .map_err(|e| VivvyError::Wal(WalError::Io(e)))?;
                 }
 
                 if let Ok(entries) = std::fs::read_dir(dir) {
@@ -467,7 +467,8 @@ impl VivvyIndex {
                         if path.extension().and_then(|s| s.to_str()) == Some("vivvy") {
                             if let Some(fname) = path.file_name() {
                                 let dst = target_dir.join(fname);
-                                std::fs::copy(&path, &dst).map_err(|e| VivvyError::Wal(WalError::Io(e)))?;
+                                std::fs::copy(&path, &dst)
+                                    .map_err(|e| VivvyError::Wal(WalError::Io(e)))?;
                             }
                         }
                     }
@@ -560,8 +561,7 @@ fn run_compaction(
     }
 
     let previous_segments = sealed.load_full();
-    let previous_manifest =
-        Manifest::load(data_dir)?.unwrap_or_else(|| Manifest::new(Vec::new()));
+    let previous_manifest = Manifest::load(data_dir)?.unwrap_or_else(|| Manifest::new(Vec::new()));
     let tombstones = tombstoned_ids.read();
     let mut seen_ids: HashSet<u64> = entries.iter().map(|(id, _)| *id).collect();
 
@@ -736,7 +736,9 @@ mod tests {
             std::fs::read_dir(&segments_dir)
                 .unwrap()
                 .flatten()
-                .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("vivvy"))
+                .filter(|entry| {
+                    entry.path().extension().and_then(|ext| ext.to_str()) == Some("vivvy")
+                })
                 .count()
         };
         assert_eq!(segment_count(), 1);
@@ -745,7 +747,11 @@ mod tests {
         idx.compact_now();
 
         assert_eq!(idx.num_sealed(), 1);
-        assert_eq!(segment_count(), 1, "obsolete segment file must be reclaimed");
+        assert_eq!(
+            segment_count(),
+            1,
+            "obsolete segment file must be reclaimed"
+        );
         assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
         assert_eq!(idx.search(&[1.0, 0.0, 0.0], 1).unwrap()[0].0, 20);
 
@@ -759,7 +765,8 @@ mod tests {
     fn test_in_memory_compaction_reclaims_upsert_tombstones() {
         let idx = VivvyIndex::new(3, Metric::L2, None::<&Path>, None::<&Path>).unwrap();
         for value in 0..10 {
-            idx.insert_with_id(10, vec![value as f32, 0.0, 0.0]).unwrap();
+            idx.insert_with_id(10, vec![value as f32, 0.0, 0.0])
+                .unwrap();
         }
 
         let physical_before: usize = idx
@@ -833,7 +840,11 @@ mod tests {
 
         idx.insert_with_id(500, vec![1.0, 0.0, 0.0]).unwrap();
         let auto_id = idx.insert(vec![0.0, 1.0, 0.0]).unwrap();
-        assert!(auto_id > 500, "auto-generated ID must be strictly greater than explicit high-water mark, got {}", auto_id);
+        assert!(
+            auto_id > 500,
+            "auto-generated ID must be strictly greater than explicit high-water mark, got {}",
+            auto_id
+        );
     }
 
     #[test]
@@ -872,7 +883,11 @@ mod tests {
 
         // Verify high-water mark after reopen
         let next_auto = reopened.insert(vec![0.5, 0.5, 0.0]).unwrap();
-        assert!(next_auto > 30, "next auto ID must be > 30, got {}", next_auto);
+        assert!(
+            next_auto > 30,
+            "next auto ID must be > 30, got {}",
+            next_auto
+        );
     }
 
     #[test]

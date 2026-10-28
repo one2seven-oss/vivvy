@@ -27,14 +27,19 @@ impl JournalCoordinator {
         let embedding = record.embedding.clone();
 
         if let Some(ref op_id) = operation_id {
-            if let Some((existing_mem_id, payload_json)) = self.repo.get_operation(&record.scope, op_id)? {
+            if let Some((existing_mem_id, payload_json)) =
+                self.repo.get_operation(&record.scope, op_id)?
+            {
                 if let Ok(existing_record) = serde_json::from_str::<MemoryRecord>(&payload_json) {
-                    if existing_record.content == record.content && existing_record.embedding == record.embedding {
+                    if existing_record.content == record.content
+                        && existing_record.embedding == record.embedding
+                    {
                         return Ok(existing_mem_id);
                     } else {
                         return Err(crate::error::MemoryError::InvalidInput {
                             code: crate::error::ErrorCode::InvalidInput,
-                            message: "Operation ID already used with a different payload".to_string(),
+                            message: "Operation ID already used with a different payload"
+                                .to_string(),
                         });
                     }
                 }
@@ -57,7 +62,8 @@ impl JournalCoordinator {
         // Mark active and operation applied
         self.repo.set_status(&memory_id, MemoryStatus::Active)?;
         if let Some(ref op_id) = operation_id {
-            self.repo.mark_operation_applied(&record.scope, op_id, now_ms)?;
+            self.repo
+                .mark_operation_applied(&record.scope, op_id, now_ms)?;
         }
 
         Ok(memory_id)
@@ -121,15 +127,21 @@ impl JournalCoordinator {
         let embedding = record.embedding.clone();
 
         if let Some(ref op_id) = operation_id {
-            if let Some((existing_mem_id, payload_json)) = self.repo.get_operation(&record.scope, op_id)? {
+            if let Some((existing_mem_id, payload_json)) =
+                self.repo.get_operation(&record.scope, op_id)?
+            {
                 if existing_mem_id == memory_id {
-                    if let Ok(existing_record) = serde_json::from_str::<MemoryRecord>(&payload_json) {
-                        if existing_record.content == record.content && existing_record.embedding == record.embedding {
+                    if let Ok(existing_record) = serde_json::from_str::<MemoryRecord>(&payload_json)
+                    {
+                        if existing_record.content == record.content
+                            && existing_record.embedding == record.embedding
+                        {
                             return Ok(());
                         } else {
                             return Err(crate::error::MemoryError::InvalidInput {
                                 code: crate::error::ErrorCode::InvalidInput,
-                                message: "Operation ID already used with a different payload".to_string(),
+                                message: "Operation ID already used with a different payload"
+                                    .to_string(),
                             });
                         }
                     }
@@ -149,7 +161,8 @@ impl JournalCoordinator {
         self.index.upsert(&memory_id, &embedding)?;
 
         if let Some(ref op_id) = operation_id {
-            self.repo.mark_operation_applied(&record.scope, op_id, now_ms)?;
+            self.repo
+                .mark_operation_applied(&record.scope, op_id, now_ms)?;
         }
 
         Ok(())
@@ -172,7 +185,6 @@ impl JournalCoordinator {
                 return Ok(());
             }
         }
-        
 
         self.repo
             .delete_memory(scope, id, operation_id.as_deref(), now_ms)?;
@@ -222,7 +234,8 @@ impl JournalCoordinator {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as i64;
-                    self.repo.mark_operation_applied(&record.scope, &op_id, now_ms)?;
+                    self.repo
+                        .mark_operation_applied(&record.scope, &op_id, now_ms)?;
                     recovered_count += 1;
                 }
             } else if kind == "delete" {
@@ -232,7 +245,8 @@ impl JournalCoordinator {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as i64;
-                    self.repo.mark_operation_applied(&record.scope, &op_id, now_ms)?;
+                    self.repo
+                        .mark_operation_applied(&record.scope, &op_id, now_ms)?;
                     recovered_count += 1;
                 }
             }

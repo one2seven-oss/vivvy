@@ -184,7 +184,9 @@ impl SealedSegment {
             if *p + 4 > b.len() {
                 return Err(SegmentError::Truncated);
             }
-            let slice: [u8; 4] = b[*p..*p + 4].try_into().map_err(|_| SegmentError::Truncated)?;
+            let slice: [u8; 4] = b[*p..*p + 4]
+                .try_into()
+                .map_err(|_| SegmentError::Truncated)?;
             *p += 4;
             Ok(u32::from_le_bytes(slice))
         };
@@ -192,7 +194,9 @@ impl SealedSegment {
             if *p + 8 > b.len() {
                 return Err(SegmentError::Truncated);
             }
-            let slice: [u8; 8] = b[*p..*p + 8].try_into().map_err(|_| SegmentError::Truncated)?;
+            let slice: [u8; 8] = b[*p..*p + 8]
+                .try_into()
+                .map_err(|_| SegmentError::Truncated)?;
             *p += 8;
             Ok(u64::from_le_bytes(slice))
         };
@@ -246,7 +250,9 @@ impl SealedSegment {
             if pos + 4 > buf.len() {
                 return Err(SegmentError::Truncated);
             }
-            let n_slice: [u8; 4] = buf[pos..pos + 4].try_into().map_err(|_| SegmentError::Truncated)?;
+            let n_slice: [u8; 4] = buf[pos..pos + 4]
+                .try_into()
+                .map_err(|_| SegmentError::Truncated)?;
             let n_neigh = u32::from_le_bytes(n_slice) as usize;
             pos += 4 + n_neigh * 4;
         }
@@ -261,7 +267,9 @@ impl SealedSegment {
         if start + 8 > self.mmap.len() {
             return Err(SegmentError::Truncated);
         }
-        let bytes: [u8; 8] = self.mmap[start..start + 8].try_into().map_err(|_| SegmentError::Truncated)?;
+        let bytes: [u8; 8] = self.mmap[start..start + 8]
+            .try_into()
+            .map_err(|_| SegmentError::Truncated)?;
         let id = u64::from_le_bytes(bytes);
         Ok(id)
     }
@@ -279,7 +287,9 @@ impl SealedSegment {
             if pos + 4 > buf.len() {
                 return Err(SegmentError::Truncated);
             }
-            let n_slice: [u8; 4] = buf[pos..pos + 4].try_into().map_err(|_| SegmentError::Truncated)?;
+            let n_slice: [u8; 4] = buf[pos..pos + 4]
+                .try_into()
+                .map_err(|_| SegmentError::Truncated)?;
             let n_neigh = u32::from_le_bytes(n_slice) as usize;
             pos += 4;
             if pos + n_neigh * 4 > buf.len() {
@@ -325,7 +335,13 @@ impl<W: std::io::Write + std::io::Seek> SegmentWriter<W> {
         }
     }
 
-    pub fn push(&mut self, id: u64, level: u32, neighbors: Vec<Vec<u32>>, vector: Vec<f32>) -> Result<(), SegmentError> {
+    pub fn push(
+        &mut self,
+        id: u64,
+        level: u32,
+        neighbors: Vec<Vec<u32>>,
+        vector: Vec<f32>,
+    ) -> Result<(), SegmentError> {
         if vector.len() != self.header.dims as usize {
             return Err(SegmentError::DimensionMismatch);
         }
@@ -388,8 +404,12 @@ mod tests {
         {
             let writer = BufWriter::new(file.try_clone().unwrap());
             let mut seg_w = SegmentWriter::new(writer, 4, 16, 32);
-            seg_w.push(42, 1, vec![vec![1, 2], vec![3]], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
-            seg_w.push(7, 0, vec![vec![0]], vec![5.0, 6.0, 7.0, 8.0]).unwrap();
+            seg_w
+                .push(42, 1, vec![vec![1, 2], vec![3]], vec![1.0, 2.0, 3.0, 4.0])
+                .unwrap();
+            seg_w
+                .push(7, 0, vec![vec![0]], vec![5.0, 6.0, 7.0, 8.0])
+                .unwrap();
             seg_w.write().unwrap();
         }
         file.seek(SeekFrom::Start(0)).unwrap();

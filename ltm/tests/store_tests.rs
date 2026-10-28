@@ -610,8 +610,14 @@ fn test_kv_metadata_filtering_in_recall() {
     // Insert 5 records with metadata: {"project": "alpha"}
     for i in 0..5 {
         let mut meta = HashMap::new();
-        meta.insert("project".to_string(), serde_json::Value::String("alpha".to_string()));
-        meta.insert("env".to_string(), serde_json::Value::String("prod".to_string()));
+        meta.insert(
+            "project".to_string(),
+            serde_json::Value::String("alpha".to_string()),
+        );
+        meta.insert(
+            "env".to_string(),
+            serde_json::Value::String("prod".to_string()),
+        );
 
         store
             .remember(RememberRequest {
@@ -631,8 +637,14 @@ fn test_kv_metadata_filtering_in_recall() {
     // Insert 5 records with metadata: {"project": "beta"}
     for i in 0..5 {
         let mut meta = HashMap::new();
-        meta.insert("project".to_string(), serde_json::Value::String("beta".to_string()));
-        meta.insert("env".to_string(), serde_json::Value::String("staging".to_string()));
+        meta.insert(
+            "project".to_string(),
+            serde_json::Value::String("beta".to_string()),
+        );
+        meta.insert(
+            "env".to_string(),
+            serde_json::Value::String("staging".to_string()),
+        );
 
         store
             .remember(RememberRequest {
@@ -733,7 +745,10 @@ fn test_format_context_token_budget() {
             .remember(RememberRequest {
                 operation_id: None,
                 scope: scope.clone(),
-                content: format!("Long memory content record item number {} with detailed context information.", i),
+                content: format!(
+                    "Long memory content record item number {} with detailed context information.",
+                    i
+                ),
                 embedding: vec![1.0, 0.0, 0.0],
                 kind: MemoryKind::Fact,
                 importance: 0.8,
@@ -894,17 +909,26 @@ fn test_time_window_filtering_in_recall() {
     let db_conn = rusqlite::Connection::open(dir.path().join("memory.db")).unwrap();
     for id in &ids_t1 {
         db_conn
-            .execute("UPDATE memories SET created_at_ms = 1000 WHERE id = ?", rusqlite::params![id])
+            .execute(
+                "UPDATE memories SET created_at_ms = 1000 WHERE id = ?",
+                rusqlite::params![id],
+            )
             .unwrap();
     }
     for id in &ids_t2 {
         db_conn
-            .execute("UPDATE memories SET created_at_ms = 2000 WHERE id = ?", rusqlite::params![id])
+            .execute(
+                "UPDATE memories SET created_at_ms = 2000 WHERE id = ?",
+                rusqlite::params![id],
+            )
             .unwrap();
     }
     for id in &ids_t3 {
         db_conn
-            .execute("UPDATE memories SET created_at_ms = 3000 WHERE id = ?", rusqlite::params![id])
+            .execute(
+                "UPDATE memories SET created_at_ms = 3000 WHERE id = ?",
+                rusqlite::params![id],
+            )
             .unwrap();
     }
 
@@ -1056,10 +1080,16 @@ fn test_fts_time_window_filtering() {
 
     let db_conn = rusqlite::Connection::open(dir.path().join("memory.db")).unwrap();
     db_conn
-        .execute("UPDATE memories SET created_at_ms = 1000 WHERE id = ?", rusqlite::params![id1])
+        .execute(
+            "UPDATE memories SET created_at_ms = 1000 WHERE id = ?",
+            rusqlite::params![id1],
+        )
         .unwrap();
     db_conn
-        .execute("UPDATE memories SET created_at_ms = 5000 WHERE id = ?", rusqlite::params![id2])
+        .execute(
+            "UPDATE memories SET created_at_ms = 5000 WHERE id = ?",
+            rusqlite::params![id2],
+        )
         .unwrap();
 
     // Query FTS for "Quantum" with time window created_after_ms = 4000
@@ -1127,7 +1157,10 @@ fn test_stale_index_files_cleaned_up_on_open() {
 
     // Verify stale files are removed
     assert!(!index_wal.exists(), "index.wal should be cleaned up");
-    assert!(!index_manifest.exists(), "index.manifest should be cleaned up");
+    assert!(
+        !index_manifest.exists(),
+        "index.manifest should be cleaned up"
+    );
     assert!(!segment_file.exists(), "segment files should be cleaned up");
 
     // Verify store still works correctly
@@ -1190,7 +1223,9 @@ fn test_custom_scoring_weights_and_explanation_diagnostics() {
     assert_eq!(default_recall.items.len(), 1);
     let default_expl = default_recall.items[0].explanation.as_ref().unwrap();
     assert!(
-        default_expl.policy_notes.contains(&"default_v1_scoring".to_string()),
+        default_expl
+            .policy_notes
+            .contains(&"default_v1_scoring".to_string()),
         "Expected default_v1_scoring in policy notes, got {:?}",
         default_expl.policy_notes
     );
@@ -1362,8 +1397,16 @@ fn test_zero_recency_weight_ensures_memory_age_has_zero_impact() {
         .unwrap();
 
     assert_eq!(default_recall.items.len(), 2);
-    let fresh_item = default_recall.items.iter().find(|i| i.memory.id == fresh_id).unwrap();
-    let old_item = default_recall.items.iter().find(|i| i.memory.id == old_id).unwrap();
+    let fresh_item = default_recall
+        .items
+        .iter()
+        .find(|i| i.memory.id == fresh_id)
+        .unwrap();
+    let old_item = default_recall
+        .items
+        .iter()
+        .find(|i| i.memory.id == old_id)
+        .unwrap();
     assert!(
         fresh_item.score > old_item.score,
         "Fresh memory should rank higher under default recency decay"
@@ -1392,8 +1435,18 @@ fn test_zero_recency_weight_ensures_memory_age_has_zero_impact() {
         .unwrap();
 
     assert_eq!(no_recency_recall.items.len(), 2);
-    let fresh_score = no_recency_recall.items.iter().find(|i| i.memory.id == fresh_id).unwrap().score;
-    let old_score = no_recency_recall.items.iter().find(|i| i.memory.id == old_id).unwrap().score;
+    let fresh_score = no_recency_recall
+        .items
+        .iter()
+        .find(|i| i.memory.id == fresh_id)
+        .unwrap()
+        .score;
+    let old_score = no_recency_recall
+        .items
+        .iter()
+        .find(|i| i.memory.id == old_id)
+        .unwrap()
+        .score;
     assert_eq!(
         fresh_score.to_bits(),
         old_score.to_bits(),
@@ -1482,8 +1535,16 @@ fn test_recency_half_life_days_decay_rate() {
         })
         .unwrap();
 
-    let recency_score_7d = recall_7d.items[0].explanation.as_ref().unwrap().recency_score;
-    let recency_score_1d = recall_1d.items[0].explanation.as_ref().unwrap().recency_score;
+    let recency_score_7d = recall_7d.items[0]
+        .explanation
+        .as_ref()
+        .unwrap()
+        .recency_score;
+    let recency_score_1d = recall_1d.items[0]
+        .explanation
+        .as_ref()
+        .unwrap()
+        .recency_score;
 
     assert!(
         recency_score_1d < recency_score_7d,
@@ -1614,7 +1675,9 @@ fn test_refuse_to_mix_models_and_dimensions_on_reopen() {
         .unwrap();
     let err_model = MemoryStore::open(cfg_diff_model).err().unwrap();
     assert!(
-        err_model.to_string().contains("refuse to mix incompatible embedding models"),
+        err_model
+            .to_string()
+            .contains("refuse to mix incompatible embedding models"),
         "Unexpected error: {err_model}"
     );
 
@@ -1626,7 +1689,9 @@ fn test_refuse_to_mix_models_and_dimensions_on_reopen() {
         .unwrap();
     let err_dims = MemoryStore::open(cfg_diff_dims).err().unwrap();
     assert!(
-        err_dims.to_string().contains("refuse to mix incompatible dimensions"),
+        err_dims
+            .to_string()
+            .contains("refuse to mix incompatible dimensions"),
         "Unexpected error: {err_dims}"
     );
 
@@ -1830,7 +1895,9 @@ fn test_default_scoring_preserves_ranking() {
 
     let explanation = item.explanation.as_ref().expect("explanation included");
     assert!(
-        explanation.policy_notes.contains(&"default_v1_scoring".to_string()),
+        explanation
+            .policy_notes
+            .contains(&"default_v1_scoring".to_string()),
         "Expected default_v1_scoring policy note"
     );
 
@@ -2034,4 +2101,3 @@ fn test_half_life_decay_sensitivity() {
         "Score should match exp(-5/2)"
     );
 }
-

@@ -275,7 +275,10 @@ fn test_wrong_key_cannot_decrypt() {
         let cfg = MemoryConfig::builder(dir.path())
             .dimensions(3)
             .embedding_model("test-model")
-            .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![0xAA; 32])))
+            .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![
+                0xAA;
+                32
+            ])))
             .build()
             .unwrap();
         let store = MemoryStore::open(cfg).unwrap();
@@ -287,7 +290,10 @@ fn test_wrong_key_cannot_decrypt() {
     let cfg = MemoryConfig::builder(dir.path())
         .dimensions(3)
         .embedding_model("test-model")
-        .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![0xBB; 32])))
+        .key_provider(Arc::new(NoOpDevKeyProvider::with_custom_key(vec![
+            0xBB;
+            32
+        ])))
         .build()
         .unwrap();
     let store = MemoryStore::open(cfg);
@@ -333,7 +339,10 @@ fn test_blind_index_lexical_recall_under_encryption() {
         .unwrap();
 
     assert!(
-        recall.items.iter().any(|i| i.memory.content.contains("technical")),
+        recall
+            .items
+            .iter()
+            .any(|i| i.memory.content.contains("technical")),
         "blind-index keyword recall should surface the matching memory"
     );
 

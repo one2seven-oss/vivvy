@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
     let (chunks, _) = bytes.as_chunks::<4>();
-    chunks.iter().map(|&chunk| f32::from_le_bytes(chunk)).collect()
+    chunks
+        .iter()
+        .map(|&chunk| f32::from_le_bytes(chunk))
+        .collect()
 }
 
 fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
@@ -195,7 +198,13 @@ CREATE TABLE IF NOT EXISTS store_meta (
 fn sanitize_fts_query(input: &str) -> String {
     let clean: String = input
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     let tokens: Vec<&str> = clean.split_whitespace().collect();
     if tokens.is_empty() {
@@ -333,7 +342,11 @@ impl Repository {
 
     /// Enforce that this store is opened with the same embedding model and dimensions
     /// it was created with, refusing to mix incompatible embedding models or dimensions.
-    pub fn enforce_store_metadata(&self, configured_model: &str, configured_dims: usize) -> Result<()> {
+    pub fn enforce_store_metadata(
+        &self,
+        configured_model: &str,
+        configured_dims: usize,
+    ) -> Result<()> {
         let conn = self.conn.lock();
 
         // 1. Embedding Model check
@@ -359,11 +372,9 @@ impl Repository {
         } else {
             // Check legacy rows in memories table if any exist
             let legacy_model: Option<String> = conn
-                .query_row(
-                    "SELECT embedding_model FROM memories LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT embedding_model FROM memories LIMIT 1", [], |row| {
+                    row.get(0)
+                })
                 .optional()
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
@@ -414,11 +425,9 @@ impl Repository {
         } else {
             // Check legacy rows in memories table if any exist
             let legacy_dims: Option<usize> = conn
-                .query_row(
-                    "SELECT embedding_dims FROM memories LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT embedding_dims FROM memories LIMIT 1", [], |row| {
+                    row.get(0)
+                })
                 .optional()
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
@@ -504,9 +513,10 @@ impl Repository {
                         "BlindIndex lexical mode requires a KeyProvider",
                     )
                 })?;
-                Ok(Some(
-                    c.blind_index_tokens(record.scope.tenant_id(), &record.content)?,
-                ))
+                Ok(Some(c.blind_index_tokens(
+                    record.scope.tenant_id(),
+                    &record.content,
+                )?))
             }
         }
     }
@@ -588,10 +598,12 @@ impl Repository {
     /// Perform a crash-consistent online backup of the SQLite database using VACUUM INTO.
     pub fn backup_sqlite(&self, target_db_path: &Path) -> Result<()> {
         let conn = self.conn.lock();
-        let path_str = target_db_path.to_str().ok_or_else(|| MemoryError::InvalidInput {
-            code: ErrorCode::InvalidInput,
-            message: "invalid target backup path".to_string(),
-        })?;
+        let path_str = target_db_path
+            .to_str()
+            .ok_or_else(|| MemoryError::InvalidInput {
+                code: ErrorCode::InvalidInput,
+                message: "invalid target backup path".to_string(),
+            })?;
 
         conn.execute("VACUUM INTO ?", params![path_str])
             .map_err(|e| MemoryError::DatabaseError {
@@ -622,11 +634,9 @@ impl Repository {
             .unwrap_or(false);
 
         let current_ver: i64 = if table_exists {
-            tx.query_row(
-                "SELECT MAX(version) FROM schema_migrations",
-                [],
-                |row| row.get(0),
-            )
+            tx.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(|e| MemoryError::DatabaseError {
                 code: ErrorCode::DatabaseError,
@@ -759,8 +769,12 @@ impl Repository {
         })?;
 
         let tenant = record.scope.tenant_id();
-        let content_blob =
-            self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+        let content_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::CONTENT,
+            record.content.as_bytes(),
+        )?;
         let embedding_blob = self.seal_field(
             tenant,
             &record.id,
@@ -769,8 +783,12 @@ impl Repository {
         )?;
         let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
         let source_json = serde_json::to_string(&record.source).unwrap_or_else(|_| "{}".into());
-        let metadata_blob =
-            self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
+        let metadata_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::METADATA,
+            metadata_json.as_bytes(),
+        )?;
         let source_blob =
             self.seal_field(tenant, &record.id, field::SOURCE, source_json.as_bytes())?;
 
@@ -910,8 +928,9 @@ impl Repository {
         })?;
 
         {
-            let mut mem_stmt = tx.prepare(
-                r#"
+            let mut mem_stmt = tx
+                .prepare(
+                    r#"
                 INSERT INTO memories (
                     id, tenant_id, namespace, agent_id, user_id, kind,
                     content, content_hash, embedding, embedding_model, embedding_dims,
@@ -926,10 +945,11 @@ impl Repository {
                     ?
                 )
                 "#,
-            ).map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to prepare batch memory insert statement: {}", e),
-            })?;
+                )
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare batch memory insert statement: {}", e),
+                })?;
 
             let mut op_stmt = tx.prepare(
                 r#"
@@ -942,7 +962,8 @@ impl Repository {
                 message: format!("Failed to prepare batch operation insert statement: {}", e),
             })?;
 
-            let mut fts_del_stmt = tx.prepare("DELETE FROM memories_fts WHERE id = ?")
+            let mut fts_del_stmt = tx
+                .prepare("DELETE FROM memories_fts WHERE id = ?")
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to prepare batch FTS delete statement: {}", e),
@@ -956,82 +977,100 @@ impl Repository {
 
             for (i, record) in records.iter().enumerate() {
                 let tenant = record.scope.tenant_id();
-                let content_blob =
-                    self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+                let content_blob = self.seal_field(
+                    tenant,
+                    &record.id,
+                    field::CONTENT,
+                    record.content.as_bytes(),
+                )?;
                 let embedding_blob = self.seal_field(
                     tenant,
                     &record.id,
                     field::EMBEDDING,
                     &embedding_to_bytes(&record.embedding),
                 )?;
-                let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
-                let source_json = serde_json::to_string(&record.source).unwrap_or_else(|_| "{}".into());
-                let metadata_blob =
-                    self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
+                let metadata_json =
+                    serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
+                let source_json =
+                    serde_json::to_string(&record.source).unwrap_or_else(|_| "{}".into());
+                let metadata_blob = self.seal_field(
+                    tenant,
+                    &record.id,
+                    field::METADATA,
+                    metadata_json.as_bytes(),
+                )?;
                 let source_blob =
                     self.seal_field(tenant, &record.id, field::SOURCE, source_json.as_bytes())?;
 
-                mem_stmt.execute(params![
-                    record.id,
-                    record.scope.tenant_id(),
-                    record.scope.namespace(),
-                    record.scope.agent_id(),
-                    record.scope.user_id(),
-                    format!("{:?}", record.kind).to_lowercase(),
-                    content_blob,
-                    record.content_hash,
-                    embedding_blob,
-                    record.embedding_model,
-                    record.embedding_dims as i64,
-                    record.importance,
-                    record.created_at_ms,
-                    record.updated_at_ms,
-                    record.last_accessed_at_ms,
-                    record.access_count as i64,
-                    record.expires_at_ms,
-                    record.status.as_str(),
-                    record.revision as i64,
-                    metadata_blob,
-                    source_blob,
-                    self.enc_version(),
-                ]).map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("Failed to insert memory in batch: {}", e),
-                })?;
-
-                fts_del_stmt.execute(params![record.id]).map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("Failed to clear FTS row in batch: {}", e),
-                })?;
-                if let Some(fts_content) = self.fts_content_for(record)? {
-                    fts_ins_stmt.execute(params![
+                mem_stmt
+                    .execute(params![
                         record.id,
                         record.scope.tenant_id(),
                         record.scope.namespace(),
-                        fts_content,
-                    ]).map_err(|e| MemoryError::DatabaseError {
+                        record.scope.agent_id(),
+                        record.scope.user_id(),
+                        format!("{:?}", record.kind).to_lowercase(),
+                        content_blob,
+                        record.content_hash,
+                        embedding_blob,
+                        record.embedding_model,
+                        record.embedding_dims as i64,
+                        record.importance,
+                        record.created_at_ms,
+                        record.updated_at_ms,
+                        record.last_accessed_at_ms,
+                        record.access_count as i64,
+                        record.expires_at_ms,
+                        record.status.as_str(),
+                        record.revision as i64,
+                        metadata_blob,
+                        source_blob,
+                        self.enc_version(),
+                    ])
+                    .map_err(|e| MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
-                        message: format!("Failed to insert FTS row in batch: {}", e),
+                        message: format!("Failed to insert memory in batch: {}", e),
                     })?;
+
+                fts_del_stmt.execute(params![record.id]).map_err(|e| {
+                    MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("Failed to clear FTS row in batch: {}", e),
+                    }
+                })?;
+                if let Some(fts_content) = self.fts_content_for(record)? {
+                    fts_ins_stmt
+                        .execute(params![
+                            record.id,
+                            record.scope.tenant_id(),
+                            record.scope.namespace(),
+                            fts_content,
+                        ])
+                        .map_err(|e| MemoryError::DatabaseError {
+                            code: ErrorCode::DatabaseError,
+                            message: format!("Failed to insert FTS row in batch: {}", e),
+                        })?;
                 }
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
                     let payload = serde_json::to_string(record).unwrap_or_else(|_| "{}".into());
                     let payload_blob =
                         self.seal_field(tenant, op_id, field::OP_PAYLOAD, payload.as_bytes())?;
-                    op_stmt.execute(params![
-                        record.scope.tenant_id(),
-                        record.scope.namespace(),
-                        op_id,
-                        record.id,
-                        "remember",
-                        payload_blob,
-                        "pending",
-                        now_ms,
-                    ]).map_err(|e| MemoryError::DatabaseError {
-                        code: ErrorCode::DatabaseError,
-                        message: format!("Failed to insert operation journal in batch: {}", e),
-                    })?;
+                    op_stmt
+                        .execute(params![
+                            record.scope.tenant_id(),
+                            record.scope.namespace(),
+                            op_id,
+                            record.id,
+                            "remember",
+                            payload_blob,
+                            "pending",
+                            now_ms,
+                        ])
+                        .map_err(|e| MemoryError::DatabaseError {
+                            code: ErrorCode::DatabaseError,
+                            message: format!("Failed to insert operation journal in batch: {}", e),
+                        })?;
                 }
             }
         }
@@ -1109,18 +1148,20 @@ impl Repository {
         })?;
 
         {
-            let mut stmt = tx.prepare("UPDATE memories SET status = ? WHERE id = ?")
+            let mut stmt = tx
+                .prepare("UPDATE memories SET status = ? WHERE id = ?")
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to prepare set_status_batch statement: {}", e),
                 })?;
 
             for id in ids {
-                stmt.execute(params![status.as_str(), id])
-                    .map_err(|e| MemoryError::DatabaseError {
+                stmt.execute(params![status.as_str(), id]).map_err(|e| {
+                    MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
                         message: format!("Failed to update status in batch: {}", e),
-                    })?;
+                    }
+                })?;
             }
         }
 
@@ -1131,7 +1172,11 @@ impl Repository {
         Ok(())
     }
 
-    pub fn get_operation(&self, scope: &MemoryScope, op_id: &str) -> Result<Option<(String, String)>> {
+    pub fn get_operation(
+        &self,
+        scope: &MemoryScope,
+        op_id: &str,
+    ) -> Result<Option<(String, String)>> {
         let raw: Option<(String, Vec<u8>)> = {
             let conn = self.conn.lock();
             conn.query_row(
@@ -1148,11 +1193,8 @@ impl Repository {
 
         match raw {
             Some((memory_id, payload_bytes)) => {
-                let payload_json = self.open_operation_payload(
-                    scope.tenant_id(),
-                    op_id,
-                    &payload_bytes,
-                )?;
+                let payload_json =
+                    self.open_operation_payload(scope.tenant_id(), op_id, &payload_bytes)?;
                 Ok(Some((memory_id, payload_json)))
             }
             None => Ok(None),
@@ -1172,7 +1214,12 @@ impl Repository {
         Ok(String::from_utf8_lossy(bytes).to_string())
     }
 
-    pub fn mark_operation_applied(&self, scope: &MemoryScope, op_id: &str, applied_at_ms: i64) -> Result<()> {
+    pub fn mark_operation_applied(
+        &self,
+        scope: &MemoryScope,
+        op_id: &str,
+        applied_at_ms: i64,
+    ) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE operations SET state = 'applied', applied_at_ms = ? WHERE tenant_id = ? AND namespace = ? AND operation_id = ?",
@@ -1185,14 +1232,21 @@ impl Repository {
         Ok(())
     }
 
-    pub fn mark_operation_applied_batch(&self, ops: &[(&MemoryScope, &str)], applied_at_ms: i64) -> Result<()> {
+    pub fn mark_operation_applied_batch(
+        &self,
+        ops: &[(&MemoryScope, &str)],
+        applied_at_ms: i64,
+    ) -> Result<()> {
         if ops.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock();
         let tx = conn.transaction().map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
-            message: format!("Failed to begin transaction for mark_operation_applied_batch: {}", e),
+            message: format!(
+                "Failed to begin transaction for mark_operation_applied_batch: {}",
+                e
+            ),
         })?;
 
         {
@@ -1203,17 +1257,25 @@ impl Repository {
                 })?;
 
             for (scope, op_id) in ops {
-                stmt.execute(params![applied_at_ms, scope.tenant_id(), scope.namespace(), op_id])
-                    .map_err(|e| MemoryError::DatabaseError {
-                        code: ErrorCode::DatabaseError,
-                        message: format!("Failed to mark operation applied in batch: {}", e),
-                    })?;
+                stmt.execute(params![
+                    applied_at_ms,
+                    scope.tenant_id(),
+                    scope.namespace(),
+                    op_id
+                ])
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to mark operation applied in batch: {}", e),
+                })?;
             }
         }
 
         tx.commit().map_err(|e| MemoryError::DatabaseError {
             code: ErrorCode::DatabaseError,
-            message: format!("Failed to commit mark_operation_applied_batch transaction: {}", e),
+            message: format!(
+                "Failed to commit mark_operation_applied_batch transaction: {}",
+                e
+            ),
         })?;
         Ok(())
     }
@@ -1248,7 +1310,9 @@ impl Repository {
         let raw = {
             let conn = self.conn.lock();
             let mut stmt = conn
-                .prepare(&format!("SELECT {RECORD_COLUMNS} FROM memories WHERE id = ?"))
+                .prepare(&format!(
+                    "SELECT {RECORD_COLUMNS} FROM memories WHERE id = ?"
+                ))
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to prepare internal record query: {}", e),
@@ -1280,12 +1344,12 @@ impl Repository {
                     message: format!("Failed to prepare active records query: {}", e),
                 })?;
 
-            let rows = stmt
-                .query_map([], read_raw_row)
-                .map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("Query active records failed: {}", e),
-                })?;
+            let rows =
+                stmt.query_map([], read_raw_row)
+                    .map_err(|e| MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("Query active records failed: {}", e),
+                    })?;
 
             let mut raws = Vec::new();
             for r in rows {
@@ -1345,8 +1409,12 @@ impl Repository {
         }
 
         let tenant = record.scope.tenant_id();
-        let content_blob =
-            self.seal_field(tenant, &record.id, field::CONTENT, record.content.as_bytes())?;
+        let content_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::CONTENT,
+            record.content.as_bytes(),
+        )?;
         let embedding_blob = self.seal_field(
             tenant,
             &record.id,
@@ -1354,8 +1422,12 @@ impl Repository {
             &embedding_to_bytes(&record.embedding),
         )?;
         let metadata_json = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".into());
-        let metadata_blob =
-            self.seal_field(tenant, &record.id, field::METADATA, metadata_json.as_bytes())?;
+        let metadata_blob = self.seal_field(
+            tenant,
+            &record.id,
+            field::METADATA,
+            metadata_json.as_bytes(),
+        )?;
 
         tx.execute(
             r#"
@@ -1442,19 +1514,20 @@ impl Repository {
             message: format!("Failed to begin delete transaction: {}", e),
         })?;
 
-        let rows_affected = tx.execute(
-            r#"
+        let rows_affected = tx
+            .execute(
+                r#"
             UPDATE memories SET
                 status = 'deleted',
                 updated_at_ms = ?
             WHERE id = ? AND tenant_id = ? AND namespace = ? AND status != 'deleted'
             "#,
-            params![now_ms, id, scope.tenant_id(), scope.namespace()],
-        )
-        .map_err(|e| MemoryError::DatabaseError {
-            code: ErrorCode::DatabaseError,
-            message: format!("Failed to tombstone memory: {}", e),
-        })?;
+                params![now_ms, id, scope.tenant_id(), scope.namespace()],
+            )
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to tombstone memory: {}", e),
+            })?;
 
         if rows_affected == 0 {
             return Err(MemoryError::not_found(id));
@@ -1503,17 +1576,19 @@ impl Repository {
         })?;
 
         {
-            let mut del_stmt = tx.prepare(
-                r#"
+            let mut del_stmt = tx
+                .prepare(
+                    r#"
                 UPDATE memories SET
                     status = 'deleted',
                     updated_at_ms = ?
                 WHERE id = ? AND tenant_id = ? AND namespace = ? AND status != 'deleted'
                 "#,
-            ).map_err(|e| MemoryError::DatabaseError {
-                code: ErrorCode::DatabaseError,
-                message: format!("Failed to prepare delete batch statement: {}", e),
-            })?;
+                )
+                .map_err(|e| MemoryError::DatabaseError {
+                    code: ErrorCode::DatabaseError,
+                    message: format!("Failed to prepare delete batch statement: {}", e),
+                })?;
 
             let mut op_stmt = tx.prepare(
                 r#"
@@ -1526,14 +1601,16 @@ impl Repository {
                 message: format!("Failed to prepare delete operation batch statement: {}", e),
             })?;
 
-            let mut fts_del_stmt = tx.prepare("DELETE FROM memories_fts WHERE id = ?")
+            let mut fts_del_stmt = tx
+                .prepare("DELETE FROM memories_fts WHERE id = ?")
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to prepare batch FTS delete statement: {}", e),
                 })?;
 
             for (i, id) in ids.iter().enumerate() {
-                let rows = del_stmt.execute(params![now_ms, id, scope.tenant_id(), scope.namespace()])
+                let rows = del_stmt
+                    .execute(params![now_ms, id, scope.tenant_id(), scope.namespace()])
                     .map_err(|e| MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
                         message: format!("Failed to tombstone memory in batch: {}", e),
@@ -1543,13 +1620,26 @@ impl Repository {
                     return Err(MemoryError::not_found(*id));
                 }
 
-                fts_del_stmt.execute(params![id]).map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("Failed to delete FTS row in batch: {}", e),
-                })?;
+                fts_del_stmt
+                    .execute(params![id])
+                    .map_err(|e| MemoryError::DatabaseError {
+                        code: ErrorCode::DatabaseError,
+                        message: format!("Failed to delete FTS row in batch: {}", e),
+                    })?;
 
                 if let Some(op_id) = operation_ids.get(i).and_then(|opt| opt.as_deref()) {
-                    op_stmt.execute(params![scope.tenant_id(), scope.namespace(), op_id, id, "delete", "{}", "applied", now_ms, now_ms])
+                    op_stmt
+                        .execute(params![
+                            scope.tenant_id(),
+                            scope.namespace(),
+                            op_id,
+                            id,
+                            "delete",
+                            "{}",
+                            "applied",
+                            now_ms,
+                            now_ms
+                        ])
                         .map_err(|e| MemoryError::DatabaseError {
                             code: ErrorCode::DatabaseError,
                             message: format!("Failed to insert delete operation in batch: {}", e),
@@ -1623,7 +1713,9 @@ impl Repository {
                             params_vec.push(Box::new(val.to_string()));
                         }
                     }
-                    serde_json::Value::Bool(b) => params_vec.push(Box::new(if *b { 1i64 } else { 0i64 })),
+                    serde_json::Value::Bool(b) => {
+                        params_vec.push(Box::new(if *b { 1i64 } else { 0i64 }))
+                    }
                     _ => params_vec.push(Box::new(val.to_string())),
                 }
             }
@@ -1643,10 +1735,12 @@ impl Repository {
         params_vec.push(Box::new(limit as i64));
 
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(&query_sql).map_err(|e| MemoryError::DatabaseError {
-            code: ErrorCode::DatabaseError,
-            message: format!("Failed to prepare FTS query: {}", e),
-        })?;
+        let mut stmt = conn
+            .prepare(&query_sql)
+            .map_err(|e| MemoryError::DatabaseError {
+                code: ErrorCode::DatabaseError,
+                message: format!("Failed to prepare FTS query: {}", e),
+            })?;
 
         let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
@@ -1726,7 +1820,9 @@ impl Repository {
                     message: format!("Failed to prepare vacuum scan: {}", e),
                 })?;
             let rows = stmt
-                .query_map(params![now_ms, batch_size as i64], |row| row.get::<_, String>(0))
+                .query_map(params![now_ms, batch_size as i64], |row| {
+                    row.get::<_, String>(0)
+                })
                 .map_err(|e| MemoryError::DatabaseError {
                     code: ErrorCode::DatabaseError,
                     message: format!("Failed to scan vacuum candidates: {}", e),
@@ -1756,16 +1852,19 @@ impl Repository {
                     message: format!("Failed to prepare vacuum FTS delete: {}", e),
                 })?;
             for id in &purge_ids {
-                purged_count += del_mem.execute(params![id]).map_err(|e| {
-                    MemoryError::DatabaseError {
+                purged_count +=
+                    del_mem
+                        .execute(params![id])
+                        .map_err(|e| MemoryError::DatabaseError {
+                            code: ErrorCode::DatabaseError,
+                            message: format!("Failed to vacuum tombstoned records: {}", e),
+                        })?;
+                del_fts
+                    .execute(params![id])
+                    .map_err(|e| MemoryError::DatabaseError {
                         code: ErrorCode::DatabaseError,
-                        message: format!("Failed to vacuum tombstoned records: {}", e),
-                    }
-                })?;
-                del_fts.execute(params![id]).map_err(|e| MemoryError::DatabaseError {
-                    code: ErrorCode::DatabaseError,
-                    message: format!("Failed to vacuum FTS rows: {}", e),
-                })?;
+                        message: format!("Failed to vacuum FTS rows: {}", e),
+                    })?;
             }
         }
 
@@ -1931,16 +2030,23 @@ mod tests {
         repo.set_status("mem-fts-2", MemoryStatus::Active).unwrap();
 
         // Search scope_a for "Quantum silicon"
-        let matches_a = repo.search_fts(&scope_a, "Quantum silicon", &MemoryFilter::default(), 10).unwrap();
+        let matches_a = repo
+            .search_fts(&scope_a, "Quantum silicon", &MemoryFilter::default(), 10)
+            .unwrap();
         assert_eq!(matches_a, vec!["mem-fts-1"]);
 
         // Search scope_b for "Quantum silicon"
-        let matches_b = repo.search_fts(&scope_b, "Quantum silicon", &MemoryFilter::default(), 10).unwrap();
+        let matches_b = repo
+            .search_fts(&scope_b, "Quantum silicon", &MemoryFilter::default(), 10)
+            .unwrap();
         assert_eq!(matches_b, vec!["mem-fts-2"]);
 
         // Tombstone mem-fts-1 and verify FTS search omits deleted
-        repo.delete_memory(&scope_a, "mem-fts-1", None, 200).unwrap();
-        let matches_after_del = repo.search_fts(&scope_a, "Quantum silicon", &MemoryFilter::default(), 10).unwrap();
+        repo.delete_memory(&scope_a, "mem-fts-1", None, 200)
+            .unwrap();
+        let matches_after_del = repo
+            .search_fts(&scope_a, "Quantum silicon", &MemoryFilter::default(), 10)
+            .unwrap();
         assert!(matches_after_del.is_empty());
     }
 }

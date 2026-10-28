@@ -49,10 +49,7 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, Error)]
 pub enum MemoryError {
     #[error("[{code}] {message}")]
-    InvalidScope {
-        code: ErrorCode,
-        message: String,
-    },
+    InvalidScope { code: ErrorCode, message: String },
 
     #[error("[{code}] Dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch {
@@ -69,10 +66,7 @@ pub enum MemoryError {
     },
 
     #[error("[{code}] Memory record not found: {id}")]
-    NotFound {
-        code: ErrorCode,
-        id: String,
-    },
+    NotFound { code: ErrorCode, id: String },
 
     #[error("[{code}] Revision conflict for record {id}: expected revision {expected}, current revision {current}")]
     RevisionConflict {
@@ -83,70 +77,37 @@ pub enum MemoryError {
     },
 
     #[error("[{code}] Store is busy or locked: {message}")]
-    StoreBusy {
-        code: ErrorCode,
-        message: String,
-    },
+    StoreBusy { code: ErrorCode, message: String },
 
     #[error("[{code}] Recovery required before store can be accessed: {message}")]
-    RecoveryRequired {
-        code: ErrorCode,
-        message: String,
-    },
+    RecoveryRequired { code: ErrorCode, message: String },
 
     #[error("[{code}] Corrupt store state: {message}")]
-    CorruptStore {
-        code: ErrorCode,
-        message: String,
-    },
+    CorruptStore { code: ErrorCode, message: String },
 
     #[error("[{code}] Encryption key unavailable: {message}")]
-    EncryptionKeyUnavailable {
-        code: ErrorCode,
-        message: String,
-    },
+    EncryptionKeyUnavailable { code: ErrorCode, message: String },
 
     #[error("[{code}] Encryption failed: {message}")]
-    EncryptionFailed {
-        code: ErrorCode,
-        message: String,
-    },
+    EncryptionFailed { code: ErrorCode, message: String },
 
     #[error("[{code}] Decryption failed: {message}")]
-    DecryptionFailed {
-        code: ErrorCode,
-        message: String,
-    },
+    DecryptionFailed { code: ErrorCode, message: String },
 
     #[error("[{code}] Policy denied memory operation: {message}")]
-    PolicyDenied {
-        code: ErrorCode,
-        message: String,
-    },
+    PolicyDenied { code: ErrorCode, message: String },
 
     #[error("[{code}] Invalid filter: {message}")]
-    InvalidFilter {
-        code: ErrorCode,
-        message: String,
-    },
+    InvalidFilter { code: ErrorCode, message: String },
 
     #[error("[{code}] Invalid input parameter: {message}")]
-    InvalidInput {
-        code: ErrorCode,
-        message: String,
-    },
+    InvalidInput { code: ErrorCode, message: String },
 
     #[error("[{code}] Database error: {message}")]
-    DatabaseError {
-        code: ErrorCode,
-        message: String,
-    },
+    DatabaseError { code: ErrorCode, message: String },
 
     #[error("[{code}] I/O error: {message}")]
-    IoError {
-        code: ErrorCode,
-        message: String,
-    },
+    IoError { code: ErrorCode, message: String },
 }
 
 impl MemoryError {

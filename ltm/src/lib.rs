@@ -237,7 +237,8 @@ impl MemoryStore {
             })
             .collect();
 
-        self.coordinator.coordinate_remember_batch(records, operation_ids)
+        self.coordinator
+            .coordinate_remember_batch(records, operation_ids)
     }
 
     /// Fetch a memory by ID within scope.
@@ -260,7 +261,8 @@ impl MemoryStore {
         let mut candidate_limit = recall_limit.saturating_mul(3).max(1);
 
         let fts_candidate_ids = if let Some(ref text) = req.query_text {
-            self.repo.search_fts(&req.scope, text, &req.filters, candidate_limit)?
+            self.repo
+                .search_fts(&req.scope, text, &req.filters, candidate_limit)?
         } else {
             Vec::new()
         };
@@ -309,7 +311,8 @@ impl MemoryStore {
         };
 
         // Combine candidate IDs with RRF scoring & track sources
-        let mut rrf_scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+        let mut rrf_scores: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
         let mut from_fts: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut from_vec: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -342,7 +345,8 @@ impl MemoryStore {
                     continue;
                 }
 
-                let distance = vivvy_core::distance::cosine(&req.query_embedding, &record.embedding);
+                let distance =
+                    vivvy_core::distance::cosine(&req.query_embedding, &record.embedding);
                 let similarity = (1.0 - (distance / 2.0)).clamp(0.0, 1.0);
                 let importance = record.importance.clamp(0.0, 1.0);
 
@@ -524,8 +528,7 @@ impl MemoryStore {
 
     /// Return a non-blocking operational health snapshot of the memory store.
     pub fn health(&self) -> Result<StoreHealth> {
-        let (active_count, tombstoned_count, pending_ops_count) =
-            self.repo.get_health_counts()?;
+        let (active_count, tombstoned_count, pending_ops_count) = self.repo.get_health_counts()?;
 
         let db_path = self.config.path().join("memory.db");
         let wal_path = self.config.path().join("memory.db-wal");
@@ -702,11 +705,7 @@ mod tests {
 
         let before_recall = store.repo.scope_lookup_count();
         let recall = store
-            .recall(RecallRequest::new(
-                requested_scope,
-                vec![1.0, 0.0, 0.0],
-                1,
-            ))
+            .recall(RecallRequest::new(requested_scope, vec![1.0, 0.0, 0.0], 1))
             .unwrap();
 
         assert_eq!(recall.items.len(), 1);
