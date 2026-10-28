@@ -31,15 +31,25 @@ FFI_LIB_NAME := vivvy_ffi
 GO_DIR := go
 GO_LIB_DIR := go/lib
 
-.PHONY: all help native go-libs go-build go-test go-test-race go-vet go-fmt-check \
+.PHONY: all help verify native go-libs go-build go-test go-test-race go-vet go-fmt-check \
         header leak-check clean-libs ts-build ts-test \
         linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 
 all: native go-build go-test
 
+# Cross-language contract gate for Unix-like development hosts. CI runs the
+# same language suites in platform-appropriate jobs, including Go's native
+# staticlib matrix and the Linux Node-API addon build.
+verify:
+	$(CARGO) test --workspace
+	$(MAKE) native
+	$(MAKE) go-test
+	$(MAKE) ts-test
+
 help:
 	@echo "Targets:"
 	@echo "  make native          Build the FFI staticlib for the host's own GOOS/GOARCH into go/lib/"
+	@echo "  make verify          Run Rust, Go, and TypeScript binding verification on this host"
 	@echo "  make linux-amd64     Build target x86_64-unknown-linux-gnu -> go/lib/libvivvy_linux_amd64.a"
 	@echo "  make linux-arm64     Build target aarch64-unknown-linux-gnu -> go/lib/libvivvy_linux_arm64.a"
 	@echo "  make darwin-amd64    Build target x86_64-apple-darwin -> go/lib/libvivvy_darwin_amd64.a"
