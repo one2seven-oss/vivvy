@@ -278,10 +278,7 @@ fn test_atomic_online_backup_and_restore() {
     // Verify initial seed record exists in restored store
     let seed_record = restored_store.get(&scope, &initial_id).unwrap();
     assert!(seed_record.is_some());
-    assert_eq!(
-        seed_record.unwrap().content,
-        "Primary seed observation"
-    );
+    assert_eq!(seed_record.unwrap().content, "Primary seed observation");
 
     // Verify recall succeeds on restored store
     let recall_res = restored_store

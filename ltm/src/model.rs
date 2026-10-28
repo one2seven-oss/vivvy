@@ -139,7 +139,11 @@ impl MemoryFilter {
     }
 
     #[must_use]
-    pub fn with_metadata_eq(mut self, key: impl Into<String>, val: impl Into<serde_json::Value>) -> Self {
+    pub fn with_metadata_eq(
+        mut self,
+        key: impl Into<String>,
+        val: impl Into<serde_json::Value>,
+    ) -> Self {
         let mut map = self.metadata_eq.unwrap_or_default();
         map.insert(key.into(), val.into());
         self.metadata_eq = Some(map);
@@ -538,7 +542,9 @@ impl Default for ContextFormatOptions {
 impl ContextFormatOptions {
     pub fn validate(&self) -> Result<()> {
         if self.max_tokens == 0 {
-            return Err(MemoryError::invalid_input("max_tokens must be greater than 0"));
+            return Err(MemoryError::invalid_input(
+                "max_tokens must be greater than 0",
+            ));
         }
         Ok(())
     }
@@ -580,10 +586,34 @@ mod tests {
     #[test]
     fn test_scoring_config_rejects_negative_weights() {
         let cases = [
-            ("similarity", ScoringConfig { weight_similarity: -0.1, ..Default::default() }),
-            ("importance", ScoringConfig { weight_importance: -0.1, ..Default::default() }),
-            ("recency", ScoringConfig { weight_recency: -0.1, ..Default::default() }),
-            ("reinforcement", ScoringConfig { weight_reinforcement: -0.1, ..Default::default() }),
+            (
+                "similarity",
+                ScoringConfig {
+                    weight_similarity: -0.1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "importance",
+                ScoringConfig {
+                    weight_importance: -0.1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "recency",
+                ScoringConfig {
+                    weight_recency: -0.1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "reinforcement",
+                ScoringConfig {
+                    weight_reinforcement: -0.1,
+                    ..Default::default()
+                },
+            ),
         ];
 
         for (name, cfg) in cases {
@@ -601,19 +631,31 @@ mod tests {
             weight_similarity: f32::NAN,
             ..Default::default()
         };
-        assert!(nan_cfg.validate().unwrap_err().to_string().contains("finite"));
+        assert!(nan_cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("finite"));
 
         let inf_cfg = ScoringConfig {
             weight_importance: f32::INFINITY,
             ..Default::default()
         };
-        assert!(inf_cfg.validate().unwrap_err().to_string().contains("finite"));
+        assert!(inf_cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("finite"));
 
         let nan_decay = ScoringConfig {
             recency_half_life_days: f32::NAN,
             ..Default::default()
         };
-        assert!(nan_decay.validate().unwrap_err().to_string().contains("finite"));
+        assert!(nan_decay
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("finite"));
     }
 
     #[test]
@@ -622,13 +664,21 @@ mod tests {
             recency_half_life_days: 0.0,
             ..Default::default()
         };
-        assert!(zero_decay.validate().unwrap_err().to_string().contains("strictly positive"));
+        assert!(zero_decay
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("strictly positive"));
 
         let neg_decay = ScoringConfig {
             recency_half_life_days: -5.0,
             ..Default::default()
         };
-        assert!(neg_decay.validate().unwrap_err().to_string().contains("strictly positive"));
+        assert!(neg_decay
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("strictly positive"));
     }
 
     #[test]
@@ -640,7 +690,11 @@ mod tests {
             weight_reinforcement: 0.0,
             recency_half_life_days: 7.0,
         };
-        assert!(all_zero.validate().unwrap_err().to_string().contains("at least one scoring weight"));
+        assert!(all_zero
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least one scoring weight"));
     }
 
     #[test]
@@ -670,27 +724,43 @@ mod tests {
             weight_similarity: -0.1,
             ..Default::default()
         };
-        assert!(neg_cfg.validate().unwrap_err().to_string().contains("must be non-negative"));
+        assert!(neg_cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("must be non-negative"));
 
         // 2. NaNs and non-finite values
         let nan_cfg = ScoringConfig {
             weight_similarity: f32::NAN,
             ..Default::default()
         };
-        assert!(nan_cfg.validate().unwrap_err().to_string().contains("finite"));
+        assert!(nan_cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("finite"));
 
         // 3. Zero or negative half-life
         let zero_half_life = ScoringConfig {
             recency_half_life_days: 0.0,
             ..Default::default()
         };
-        assert!(zero_half_life.validate().unwrap_err().to_string().contains("strictly positive"));
+        assert!(zero_half_life
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("strictly positive"));
 
         let neg_half_life = ScoringConfig {
             recency_half_life_days: -2.0,
             ..Default::default()
         };
-        assert!(neg_half_life.validate().unwrap_err().to_string().contains("strictly positive"));
+        assert!(neg_half_life
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("strictly positive"));
 
         // 4. All-zero weights
         let all_zero = ScoringConfig {
@@ -700,7 +770,11 @@ mod tests {
             weight_reinforcement: 0.0,
             recency_half_life_days: 7.0,
         };
-        assert!(all_zero.validate().unwrap_err().to_string().contains("at least one scoring weight"));
+        assert!(all_zero
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least one scoring weight"));
 
         // Valid configuration
         let valid_cfg = ScoringConfig::builder()

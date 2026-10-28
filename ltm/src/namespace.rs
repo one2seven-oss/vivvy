@@ -33,7 +33,9 @@ impl MemoryScope {
     pub fn with_agent(mut self, agent_id: impl Into<String>) -> Result<Self> {
         let agent = agent_id.into().trim().to_string();
         if agent.is_empty() {
-            return Err(MemoryError::invalid_scope("agent_id cannot be empty string"));
+            return Err(MemoryError::invalid_scope(
+                "agent_id cannot be empty string",
+            ));
         }
         self.agent_id = Some(agent);
         Ok(self)

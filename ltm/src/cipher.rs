@@ -158,7 +158,9 @@ impl FieldCipher {
         envelope: &[u8],
     ) -> Result<Vec<u8>> {
         if envelope.len() < HEADER_LEN {
-            return Err(MemoryError::decryption_failed("ciphertext envelope too short"));
+            return Err(MemoryError::decryption_failed(
+                "ciphertext envelope too short",
+            ));
         }
         let version = envelope[0];
         if version != ENVELOPE_VERSION {
@@ -264,7 +266,11 @@ mod tests {
         let c = cipher();
         let pt = b"user prefers concise technical answers";
         let env = c.seal("acme", "mem-1", field::CONTENT, pt).unwrap();
-        assert_ne!(&env[HEADER_LEN..], pt, "ciphertext must differ from plaintext");
+        assert_ne!(
+            &env[HEADER_LEN..],
+            pt,
+            "ciphertext must differ from plaintext"
+        );
         let out = c.open("acme", "mem-1", field::CONTENT, &env).unwrap();
         assert_eq!(out, pt);
     }
@@ -304,7 +310,9 @@ mod tests {
     #[test]
     fn blind_index_matches_shared_tokens() {
         let c = cipher();
-        let idx = c.blind_index_tokens("acme", "Concise Technical Responses").unwrap();
+        let idx = c
+            .blind_index_tokens("acme", "Concise Technical Responses")
+            .unwrap();
         let q = c.blind_index_query("acme", "technical").unwrap();
         let term = q.trim_matches('"');
         assert!(idx.split(' ').any(|t| t == term));

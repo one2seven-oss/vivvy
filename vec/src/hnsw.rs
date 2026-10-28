@@ -23,6 +23,12 @@ use roaring::RoaringBitmap;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+/// Conservative upper bound on HNSW graph height. With the default M=16
+/// (ml ≈ 0.36), level 32 has probability ~exp(−32/0.36) ≈ 10^{-39}, so this
+/// cap is never reached in normal operation but prevents pathological allocation
+/// if the RNG produces a boundary value.
+const MAX_HNSW_LEVEL: usize = 32;
+
 #[derive(Debug, Clone)]
 pub struct HnswIndex {
     // Vectors + IDs by internal node index (0..len-1).
@@ -127,21 +133,40 @@ impl HnswIndex {
 
     // Geometric: P(level=L) = exp(−L/mL) − exp(−(L+1)/mL).
     // Sampled via floor(−ln(u)·mL). ~63% at level 0, ~23% at 1, ~9% at 2, etc.
+
+    /// Compute an HNSW level from a uniform random sample `r` in [0, 1).
+    ///
+    /// `fastrand::f32()` may return 0.0, which would make `ln(0)` = −∞ and
+    /// ultimately produce an absurdly large `usize`.  We map `r` through
+    /// `u = 1 − r` (so 0 → 1 and values near 1 → small positives), clamp to
+    /// `f32::MIN_POSITIVE` as a belt-and-suspenders guard, and cap the result
+    /// at [`MAX_HNSW_LEVEL`].  −ln(1−r) has the same exponential distribution
+    /// as −ln(r), so the level probabilities are unchanged.
+    fn level_from_uniform(&self, r: f32) -> usize {
+        debug_assert!((0.0..1.0).contains(&r));
+        let u = (1.0 - r).max(f32::MIN_POSITIVE);
+        ((-u.ln() * self.ml).floor() as usize).min(MAX_HNSW_LEVEL)
+    }
+
     fn random_level(&self) -> usize {
-        let r: f32 = fastrand::f32();
-        (-r.ln() * self.ml).floor() as usize
+        self.level_from_uniform(fastrand::f32())
     }
 
     pub fn insert(&mut self, id: u64, vector: Vec<f32>) {
+        // Compute the level and pre-allocate layer storage *before* touching
+        // any index state. If this panicked (e.g. from an absurd level), the
+        // index would remain consistent.
+        let level = self.random_level();
+        let node_neighbors = vec![Vec::new(); level + 1];
+
         let idx = self.ids.len();
         if let Some(old_idx) = self.id_to_node.insert(id, idx) {
             self.deleted_nodes.insert(old_idx as u32);
         }
         self.vectors.extend(vector);
         self.ids.push(id);
-        let level = self.random_level();
         self.levels.push(level);
-        self.neighbors.push(vec![Vec::new(); level + 1]);
+        self.neighbors.push(node_neighbors);
 
         let Some(mut ep) = self.entry else {
             self.entry = Some(idx);
@@ -152,12 +177,21 @@ impl HnswIndex {
         // Greedy descent from top to one above node's level — we only need
         // the single closest node to locate the insertion neighbourhood.
         for lc in (level + 1..=self.max_level).rev() {
-            ep = self.greedy_down(&self.vectors[idx * self.dims..(idx + 1) * self.dims], ep, lc);
+            ep = self.greedy_down(
+                &self.vectors[idx * self.dims..(idx + 1) * self.dims],
+                ep,
+                lc,
+            );
         }
 
         // Insert at each layer: ef_search → select closest → connect bidirectionally → trim overflow.
         for lc in (0..=level.min(self.max_level)).rev() {
-            let candidates = self.ef_search(&self.vectors[idx * self.dims..(idx + 1) * self.dims], ep, self.ef_construction, lc);
+            let candidates = self.ef_search(
+                &self.vectors[idx * self.dims..(idx + 1) * self.dims],
+                ep,
+                self.ef_construction,
+                lc,
+            );
             let m_conn = if lc == 0 { self.m_max } else { self.m };
             let selected = closest_n(&candidates, m_conn);
 
@@ -186,8 +220,16 @@ impl HnswIndex {
             let mut improved = false;
             if let Some(neigh) = self.neighbors[ep].get(layer) {
                 for &n in neigh {
-                    let d = distance::compute(self.metric, query, &self.vectors[n * self.dims..(n + 1) * self.dims]);
-                    if d < distance::compute(self.metric, query, &self.vectors[ep * self.dims..(ep + 1) * self.dims]) {
+                    let d = distance::compute(
+                        self.metric,
+                        query,
+                        &self.vectors[n * self.dims..(n + 1) * self.dims],
+                    );
+                    if d < distance::compute(
+                        self.metric,
+                        query,
+                        &self.vectors[ep * self.dims..(ep + 1) * self.dims],
+                    ) {
                         ep = n;
                         improved = true;
                     }
@@ -208,7 +250,11 @@ impl HnswIndex {
     fn ef_search(&self, query: &[f32], entry: usize, ef: usize, layer: usize) -> Vec<(usize, f32)> {
         let mut visited = HashSet::new();
         visited.insert(entry);
-        let ed = distance::compute(self.metric, query, &self.vectors[entry * self.dims..(entry + 1) * self.dims]);
+        let ed = distance::compute(
+            self.metric,
+            query,
+            &self.vectors[entry * self.dims..(entry + 1) * self.dims],
+        );
 
         let mut candidates = BinaryHeap::new();
         candidates.push(Reverse(Candidate {
@@ -230,7 +276,11 @@ impl HnswIndex {
             if let Some(neigh) = self.neighbors[c.idx].get(layer) {
                 for &n in neigh {
                     if visited.insert(n) {
-                        let d = distance::compute(self.metric, query, &self.vectors[n * self.dims..(n + 1) * self.dims]);
+                        let d = distance::compute(
+                            self.metric,
+                            query,
+                            &self.vectors[n * self.dims..(n + 1) * self.dims],
+                        );
                         let of = OrderedFloat(d);
                         let furthest = results.peek().unwrap().dist;
                         if of < furthest || results.len() < ef {
@@ -260,7 +310,11 @@ impl HnswIndex {
             .map(|&n| {
                 (
                     n,
-                    distance::compute(self.metric, &self.vectors[node * self.dims..(node + 1) * self.dims], &self.vectors[n * self.dims..(n + 1) * self.dims]),
+                    distance::compute(
+                        self.metric,
+                        &self.vectors[node * self.dims..(node + 1) * self.dims],
+                        &self.vectors[n * self.dims..(n + 1) * self.dims],
+                    ),
                 )
             })
             .collect();
@@ -466,5 +520,27 @@ mod tests {
         let hits = idx.search(&[50.0, 0.0], 5);
         assert_eq!(hits.len(), 5);
         assert_eq!(hits[0].0, 50);
+    }
+
+    #[test]
+    fn random_level_maps_zero_to_base_layer() {
+        let idx = HnswIndex::new(3, Metric::L2);
+        assert_eq!(idx.level_from_uniform(0.0), 0);
+    }
+
+    #[test]
+    fn random_level_is_bounded() {
+        let mut idx = HnswIndex::new(3, Metric::L2);
+        // Make the unclamped result intentionally enormous.
+        idx.ml = 100.0;
+        assert_eq!(idx.level_from_uniform(1.0 - f32::EPSILON), MAX_HNSW_LEVEL);
+    }
+
+    #[test]
+    fn random_level_never_exceeds_limit_for_boundary_samples() {
+        let idx = HnswIndex::new(3, Metric::L2);
+        for sample in [0.0, f32::EPSILON, 0.5, 1.0 - f32::EPSILON] {
+            assert!(idx.level_from_uniform(sample) <= MAX_HNSW_LEVEL);
+        }
     }
 }

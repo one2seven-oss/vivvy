@@ -178,7 +178,9 @@ fn recall_with_and_without_custom_scoring() {
     unsafe {
         let (store, _dir) = open_test_store(3);
 
-        let record = cstr(r#"{"tenant_id":"acme","namespace":"scoring","content":"scored fact","importance":0.8}"#);
+        let record = cstr(
+            r#"{"tenant_id":"acme","namespace":"scoring","content":"scored fact","importance":0.8}"#,
+        );
         let vector: [f32; 3] = [1.0, 0.0, 0.0];
         let mut out_id: *mut c_char = ptr::null_mut();
 
@@ -227,7 +229,9 @@ fn recall_with_and_without_custom_scoring() {
         );
         assert_eq!(code, 0, "custom recall failed: {}", last_error());
         assert!(!out_custom_results.is_null());
-        let custom_str = CStr::from_ptr(out_custom_results).to_string_lossy().into_owned();
+        let custom_str = CStr::from_ptr(out_custom_results)
+            .to_string_lossy()
+            .into_owned();
         assert!(custom_str.contains("custom_scoring"));
         vivvy_free_string(out_custom_results);
 

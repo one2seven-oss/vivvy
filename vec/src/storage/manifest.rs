@@ -103,7 +103,9 @@ mod tests {
         let manifest = Manifest::new(vec!["seg-1.vivvy".into(), "seg-2.vivvy".into()]);
         manifest.save(dir.path()).unwrap();
 
-        let loaded = Manifest::load(dir.path()).unwrap().expect("manifest exists");
+        let loaded = Manifest::load(dir.path())
+            .unwrap()
+            .expect("manifest exists");
         assert_eq!(loaded, manifest);
     }
 }

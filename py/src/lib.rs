@@ -9,11 +9,11 @@
 //!   `HashMap<String, serde_json::Value>` for dynamic key-value filtering in `MemoryStore.recall()`.
 //! - Filter dicts are AND-combined.
 
-use std::collections::HashMap;
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::collections::HashMap;
 use vivvy_core::concurrent::VivvyIndex;
 use vivvy_core::distance::Metric;
 use vivvy_core::filter::FilterExpr;
@@ -123,29 +123,32 @@ impl Index {
             })
             .transpose()?;
 
-        let parsed_vectors: Vec<Vec<f32>> = if let Ok(arr2) = vectors.extract::<numpy::PyReadonlyArray2<'_, f32>>() {
-            let slice2 = arr2.as_array();
-            let mut vecs = Vec::with_capacity(slice2.shape()[0]);
-            for row in slice2.outer_iter() {
-                if let Some(s) = row.as_slice() {
-                    vecs.push(s.to_vec());
-                } else {
-                    return Err(PyValueError::new_err("2D numpy array must be C-contiguous float32"));
+        let parsed_vectors: Vec<Vec<f32>> =
+            if let Ok(arr2) = vectors.extract::<numpy::PyReadonlyArray2<'_, f32>>() {
+                let slice2 = arr2.as_array();
+                let mut vecs = Vec::with_capacity(slice2.shape()[0]);
+                for row in slice2.outer_iter() {
+                    if let Some(s) = row.as_slice() {
+                        vecs.push(s.to_vec());
+                    } else {
+                        return Err(PyValueError::new_err(
+                            "2D numpy array must be C-contiguous float32",
+                        ));
+                    }
                 }
-            }
-            vecs
-        } else if let Ok(seq) = vectors.extract::<Vec<Bound<'_, PyAny>>>() {
-            let mut vecs = Vec::with_capacity(seq.len());
-            for item in seq {
-                let vec_input = PyVectorInput::extract(&item)?;
-                vecs.push(vec_input.into_vec()?);
-            }
-            vecs
-        } else {
-            return Err(PyTypeError::new_err(
-                "vectors must be a list of vectors or a 2D float32 numpy array",
-            ));
-        };
+                vecs
+            } else if let Ok(seq) = vectors.extract::<Vec<Bound<'_, PyAny>>>() {
+                let mut vecs = Vec::with_capacity(seq.len());
+                for item in seq {
+                    let vec_input = PyVectorInput::extract(&item)?;
+                    vecs.push(vec_input.into_vec()?);
+                }
+                vecs
+            } else {
+                return Err(PyTypeError::new_err(
+                    "vectors must be a list of vectors or a 2D float32 numpy array",
+                ));
+            };
 
         py.allow_threads(move || {
             self.inner
@@ -200,7 +203,9 @@ fn parse_filter(dict: Option<&Bound<'_, PyDict>>) -> PyResult<Option<FilterExpr>
         } else if let Ok(values) = val.extract::<Vec<String>>() {
             exprs.push(FilterExpr::In { field, values });
         } else {
-            return Err(PyValueError::new_err("filter values must be a string or a list of strings"));
+            return Err(PyValueError::new_err(
+                "filter values must be a string or a list of strings",
+            ));
         }
     }
     if exprs.is_empty() {
@@ -230,7 +235,9 @@ fn py_any_to_json_val(val: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     }
 }
 
-fn parse_py_dict_metadata(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, serde_json::Value>> {
+fn parse_py_dict_metadata(
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<HashMap<String, serde_json::Value>> {
     let mut map = HashMap::with_capacity(dict.len());
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
@@ -249,10 +256,14 @@ fn parse_scope(
     let mut scope = vivvy_memory::MemoryScope::new(tenant_id, namespace)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     if let Some(agent) = agent_id {
-        scope = scope.with_agent(agent).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        scope = scope
+            .with_agent(agent)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
     }
     if let Some(user) = user_id {
-        scope = scope.with_user(user).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        scope = scope
+            .with_user(user)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
     }
     Ok(scope)
 }
@@ -333,7 +344,11 @@ impl PyMemoryStore {
 
     #[getter]
     fn embedder(&self, py: Python<'_>) -> Option<Py<PyAny>> {
-        self.embedder.lock().unwrap().as_ref().map(|obj| obj.clone_ref(py))
+        self.embedder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|obj| obj.clone_ref(py))
     }
 
     #[setter]
@@ -370,7 +385,10 @@ impl PyMemoryStore {
 
         let vec_input = PyVectorInput::extract(&embedding)?;
         let vec_data = vec_input.into_vec()?;
-        let meta_map = metadata.map(parse_py_dict_metadata).transpose()?.unwrap_or_default();
+        let meta_map = metadata
+            .map(parse_py_dict_metadata)
+            .transpose()?
+            .unwrap_or_default();
 
         let req = vivvy_memory::RememberRequest {
             operation_id,
@@ -457,9 +475,19 @@ impl PyMemoryStore {
                 None => HashMap::new(),
             };
 
-            let scope = parse_scope(&tenant_id, &namespace, agent_id.as_deref(), user_id.as_deref())?;
+            let scope = parse_scope(
+                &tenant_id,
+                &namespace,
+                agent_id.as_deref(),
+                user_id.as_deref(),
+            )?;
 
-            let m_kind = match kind_str.as_deref().unwrap_or("fact").to_lowercase().as_str() {
+            let m_kind = match kind_str
+                .as_deref()
+                .unwrap_or("fact")
+                .to_lowercase()
+                .as_str()
+            {
                 "preference" => vivvy_memory::MemoryKind::Preference,
                 "instruction" => vivvy_memory::MemoryKind::Instruction,
                 "context" => vivvy_memory::MemoryKind::Context,
@@ -717,13 +745,7 @@ impl PyMemoryStore {
     }
 
     #[pyo3(signature = (tenant_id, namespace, id))]
-    fn forget(
-        &self,
-        py: Python<'_>,
-        tenant_id: &str,
-        namespace: &str,
-        id: &str,
-    ) -> PyResult<()> {
+    fn forget(&self, py: Python<'_>, tenant_id: &str, namespace: &str, id: &str) -> PyResult<()> {
         let scope = vivvy_memory::MemoryScope::new(tenant_id, namespace)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let req = vivvy_memory::ForgetRequest::new(scope, id)
@@ -760,7 +782,9 @@ impl PyMemoryStore {
     fn health(&self, py: Python<'_>) -> PyResult<PyObject> {
         let store = self.inner.clone();
         let health = py.allow_threads(move || {
-            store.health().map_err(|e| PyValueError::new_err(e.to_string()))
+            store
+                .health()
+                .map_err(|e| PyValueError::new_err(e.to_string()))
         })?;
 
         let dict = PyDict::new(py);

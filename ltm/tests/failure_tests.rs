@@ -39,7 +39,10 @@ fn test_fault_injection_remember_unapplied_op() {
         .unwrap();
 
     // Verify raw status in DB is still Pending before recovery
-    let raw_record = repo.get_by_scope_and_id(&scope, &record_id).unwrap().unwrap();
+    let raw_record = repo
+        .get_by_scope_and_id(&scope, &record_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(raw_record.status, MemoryStatus::Pending);
 
     drop(repo);
@@ -54,7 +57,10 @@ fn test_fault_injection_remember_unapplied_op() {
     let store = MemoryStore::open(config).unwrap();
 
     // 3. Verify record was recovered, marked Active, and populated in Vector Index
-    let recovered_record = store.get(&scope, &record_id).unwrap().expect("record recovered");
+    let recovered_record = store
+        .get(&scope, &record_id)
+        .unwrap()
+        .expect("record recovered");
     assert_eq!(recovered_record.status, MemoryStatus::Active);
 
     // 4. Verify recall can locate it via vector search
@@ -136,7 +142,10 @@ fn test_fault_injection_update_unapplied_op() {
         .unwrap();
 
     assert_eq!(recall_res.items.len(), 1);
-    assert_eq!(recall_res.items[0].memory.content, "Updated text after crash recovery");
+    assert_eq!(
+        recall_res.items[0].memory.content,
+        "Updated text after crash recovery"
+    );
 }
 
 #[test]
@@ -206,7 +215,13 @@ fn test_property_multi_tenant_isolation_fuzz() {
 
     let store = MemoryStore::open(config).unwrap();
 
-    let tenants = ["tenant-alpha", "tenant-beta", "tenant-gamma", "tenant-delta", "tenant-epsilon"];
+    let tenants = [
+        "tenant-alpha",
+        "tenant-beta",
+        "tenant-gamma",
+        "tenant-delta",
+        "tenant-epsilon",
+    ];
     let namespaces = ["support", "billing", "analytics"];
     let agents = ["agent-1", "agent-2"];
     let users = ["user-x", "user-y"];
@@ -215,7 +230,9 @@ fn test_property_multi_tenant_isolation_fuzz() {
 
     let mut seed: u64 = 0xDEADBEEF;
     let mut rng = || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         seed
     };
 
