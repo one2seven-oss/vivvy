@@ -14,14 +14,15 @@ use std::panic::AssertUnwindSafe;
 use libc::c_int;
 
 use vivvy_memory::{
-    ContextFormatOptions, MemoryConfig, MemoryFilter, MemoryScope, MemoryStore, RecallRequest,
-    RememberRequest,
+    ContextFormatOptions, ForgetRequest, MemoryConfig, MemoryFilter, MemoryScope, MemoryStatus,
+    MemoryStore, RecallRequest, RememberRequest, UpdateRequest,
 };
 
 use crate::error::{run_guarded, FfiError};
 use crate::types::{
-    parse_kind, ExplanationJson, FormatOptionsJson, InsertRecordJson, OpenConfigJson,
-    RecallOptionsJson, RecallResultsJson, ScoredMemoryJson,
+    parse_kind, ExpirationUpdateJson, ExplanationJson, FormatOptionsJson, InsertRecordJson,
+    MemoryRecordJson, OpenConfigJson, RecallOptionsJson, RecallResultsJson, ScopeJson,
+    ScoredMemoryJson, UpdateJson,
 };
 
 /// Opaque handle owning a `MemoryStore`. Never constructed or read from C/Go;
@@ -123,6 +124,39 @@ fn build_filters(opts: &RecallOptionsJson) -> MemoryFilter {
         created_after_ms: opts.created_after_ms,
         created_before_ms: opts.created_before_ms,
     }
+}
+
+fn build_scope_from_json(scope: ScopeJson) -> Result<MemoryScope, FfiError> {
+    build_scope(
+        &scope.tenant_id,
+        &scope.namespace,
+        scope.agent_id.as_deref(),
+        scope.user_id.as_deref(),
+    )
+}
+
+fn build_remember_request(
+    rec: InsertRecordJson,
+    embedding: Vec<f32>,
+) -> Result<RememberRequest, FfiError> {
+    let scope = build_scope(
+        &rec.tenant_id,
+        &rec.namespace,
+        rec.agent_id.as_deref(),
+        rec.user_id.as_deref(),
+    )?;
+
+    Ok(RememberRequest {
+        operation_id: rec.operation_id,
+        scope,
+        content: rec.content,
+        embedding,
+        kind: parse_kind(&rec.kind),
+        importance: rec.importance,
+        expires_at_ms: rec.expires_at_ms,
+        metadata: rec.metadata,
+        source: rec.source,
+    })
 }
 
 fn scored_memory_json_list(items: &[vivvy_memory::RecallItem]) -> Vec<ScoredMemoryJson> {
@@ -254,26 +288,7 @@ pub unsafe extern "C" fn vivvy_store_insert(
             })?;
         let embedding = unsafe { slice_from_raw(vector, dim, "vector")? }.to_vec();
 
-        let scope = build_scope(
-            &rec.tenant_id,
-            &rec.namespace,
-            rec.agent_id.as_deref(),
-            rec.user_id.as_deref(),
-        )?;
-
-        let req = RememberRequest {
-            operation_id: rec.operation_id,
-            scope,
-            content: rec.content,
-            embedding,
-            kind: parse_kind(&rec.kind),
-            importance: rec.importance,
-            expires_at_ms: rec.expires_at_ms,
-            metadata: rec.metadata,
-            source: rec.source,
-        };
-
-        Ok(store_ref.remember(req)?)
+        Ok(store_ref.remember(build_remember_request(rec, embedding)?)?)
     }));
 
     match outcome {
@@ -283,6 +298,288 @@ pub unsafe extern "C" fn vivvy_store_insert(
             unsafe { *out_id = to_c_string(id) };
             0
         }
+        Err(code) => code,
+    }
+}
+
+/// Inserts multiple records in one atomic store transaction.
+///
+/// `records_json` is a JSON array of the same record objects accepted by
+/// `vivvy_store_insert`; embeddings are supplied as `count` consecutive
+/// vectors in `vectors_flat`, each with `dim` elements. On success,
+/// `*out_ids_json` receives a JSON array of generated IDs.
+///
+/// # Safety
+/// All pointers must remain valid for this call; string pointers must be
+/// NUL-terminated and `vectors_flat` must contain `count * dim` initialized floats.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vivvy_store_insert_batch(
+    store: *const CVivvyStore,
+    records_json: *const c_char,
+    vectors_flat: *const f32,
+    dim: usize,
+    count: usize,
+    out_ids_json: *mut *mut c_char,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<String, FfiError> {
+        if out_ids_json.is_null() {
+            return Err(FfiError::NullPointer("out_ids_json"));
+        }
+        let store_ref = unsafe { store_ref(store)? };
+        let records_str = unsafe { cstr_to_str(records_json, "records_json")? };
+        let records: Vec<InsertRecordJson> =
+            serde_json::from_str(records_str).map_err(|source| FfiError::InvalidJson {
+                field: "records_json",
+                source,
+            })?;
+        if records.len() != count {
+            return Err(FfiError::Memory(vivvy_memory::MemoryError::invalid_input(
+                "count must equal the number of records in records_json",
+            )));
+        }
+        let vector_len = count.checked_mul(dim).ok_or_else(|| {
+            FfiError::Memory(vivvy_memory::MemoryError::invalid_input(
+                "count * dim overflows usize",
+            ))
+        })?;
+        let vectors = unsafe { slice_from_raw(vectors_flat, vector_len, "vectors_flat")? };
+
+        let mut requests = Vec::with_capacity(count);
+        for (index, record) in records.into_iter().enumerate() {
+            let start = index * dim;
+            requests.push(build_remember_request(
+                record,
+                vectors[start..start + dim].to_vec(),
+            )?);
+        }
+        let ids = store_ref.remember_batch(requests)?;
+        serde_json::to_string(&ids).map_err(|source| FfiError::InvalidJson {
+            field: "out_ids_json",
+            source,
+        })
+    }));
+
+    match outcome {
+        Ok(json) => {
+            unsafe { *out_ids_json = to_c_string(json) };
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Retrieves one active record from a scope. A missing record is returned as
+/// the JSON literal `null`, allowing callers to distinguish absence from an
+/// operational error.
+///
+/// # Safety
+/// `store` must be live, input strings must be NUL-terminated, and
+/// `out_record_json` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_get(
+    store: *const CVivvyStore,
+    scope_json: *const c_char,
+    id: *const c_char,
+    out_record_json: *mut *mut c_char,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<String, FfiError> {
+        if out_record_json.is_null() {
+            return Err(FfiError::NullPointer("out_record_json"));
+        }
+        let store_ref = unsafe { store_ref(store)? };
+        let scope_str = unsafe { cstr_to_str(scope_json, "scope_json")? };
+        let scope: ScopeJson =
+            serde_json::from_str(scope_str).map_err(|source| FfiError::InvalidJson {
+                field: "scope_json",
+                source,
+            })?;
+        let id = unsafe { cstr_to_str(id, "id")? };
+        let record = store_ref
+            .get(&build_scope_from_json(scope)?, id)?
+            .filter(|record| record.status == MemoryStatus::Active)
+            .map(|record| MemoryRecordJson::from(&record));
+        serde_json::to_string(&record).map_err(|source| FfiError::InvalidJson {
+            field: "out_record_json",
+            source,
+        })
+    }));
+
+    match outcome {
+        Ok(json) => {
+            unsafe { *out_record_json = to_c_string(json) };
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Atomically updates a record with optimistic revision checking. Pass a NULL
+/// `vector` and `dim == 0` to preserve its existing embedding; otherwise the
+/// supplied vector replaces it.
+///
+/// # Safety
+/// `store` must be live; `update_json` must be NUL-terminated; and non-null
+/// vectors must contain `dim` initialized floats.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_update(
+    store: *const CVivvyStore,
+    update_json: *const c_char,
+    vector: *const f32,
+    dim: usize,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<(), FfiError> {
+        let store_ref = unsafe { store_ref(store)? };
+        let update_str = unsafe { cstr_to_str(update_json, "update_json")? };
+        let update: UpdateJson =
+            serde_json::from_str(update_str).map_err(|source| FfiError::InvalidJson {
+                field: "update_json",
+                source,
+            })?;
+        let embedding = if dim == 0 {
+            None
+        } else {
+            Some(unsafe { slice_from_raw(vector, dim, "vector")? }.to_vec())
+        };
+        let expires_at_ms = update.expires_at_ms.map(|value| match value {
+            ExpirationUpdateJson::Value(value) => Some(value),
+            ExpirationUpdateJson::Clear(()) => None,
+        });
+        let req = UpdateRequest {
+            operation_id: update.operation_id,
+            scope: build_scope(
+                &update.tenant_id,
+                &update.namespace,
+                update.agent_id.as_deref(),
+                update.user_id.as_deref(),
+            )?,
+            id: update.id,
+            expected_revision: update.expected_revision,
+            content: update.content,
+            embedding,
+            kind: update.kind.as_deref().map(parse_kind),
+            importance: update.importance,
+            expires_at_ms,
+            metadata_patch: update.metadata_patch,
+        };
+        store_ref.update(req)?;
+        Ok(())
+    }));
+
+    match outcome {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
+}
+
+/// Soft-deletes one record, immediately hiding it from reads.
+///
+/// # Safety
+/// `store` must be live and both string pointers must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_forget(
+    store: *const CVivvyStore,
+    scope_json: *const c_char,
+    id: *const c_char,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<(), FfiError> {
+        let store_ref = unsafe { store_ref(store)? };
+        let scope_str = unsafe { cstr_to_str(scope_json, "scope_json")? };
+        let scope: ScopeJson =
+            serde_json::from_str(scope_str).map_err(|source| FfiError::InvalidJson {
+                field: "scope_json",
+                source,
+            })?;
+        let id = unsafe { cstr_to_str(id, "id")? };
+        let req = ForgetRequest::new(build_scope_from_json(scope)?, id)?;
+        store_ref.forget(req)?;
+        Ok(())
+    }));
+
+    match outcome {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
+}
+
+/// Soft-deletes records in one scope as a single transaction. `ids_json` is a
+/// JSON array of string IDs.
+///
+/// # Safety
+/// `store` must be live and both JSON strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_forget_batch(
+    store: *const CVivvyStore,
+    scope_json: *const c_char,
+    ids_json: *const c_char,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<(), FfiError> {
+        let store_ref = unsafe { store_ref(store)? };
+        let scope_str = unsafe { cstr_to_str(scope_json, "scope_json")? };
+        let scope: ScopeJson =
+            serde_json::from_str(scope_str).map_err(|source| FfiError::InvalidJson {
+                field: "scope_json",
+                source,
+            })?;
+        let ids_str = unsafe { cstr_to_str(ids_json, "ids_json")? };
+        let ids: Vec<String> =
+            serde_json::from_str(ids_str).map_err(|source| FfiError::InvalidJson {
+                field: "ids_json",
+                source,
+            })?;
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        store_ref.forget_batch(&build_scope_from_json(scope)?, &id_refs)?;
+        Ok(())
+    }));
+
+    match outcome {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
+}
+
+/// Returns a privacy-safe JSON health snapshot for the store.
+///
+/// # Safety
+/// `store` must be live and `out_health_json` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_health(
+    store: *const CVivvyStore,
+    out_health_json: *mut *mut c_char,
+) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<String, FfiError> {
+        if out_health_json.is_null() {
+            return Err(FfiError::NullPointer("out_health_json"));
+        }
+        let health = unsafe { store_ref(store)? }.health()?;
+        serde_json::to_string(&health).map_err(|source| FfiError::InvalidJson {
+            field: "out_health_json",
+            source,
+        })
+    }));
+
+    match outcome {
+        Ok(json) => {
+            unsafe { *out_health_json = to_c_string(json) };
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Rebuilds the in-memory vector accelerator from durable active records.
+///
+/// # Safety
+/// `store` must be a live handle returned by `vivvy_store_open`.
+#[no_mangle]
+pub unsafe extern "C" fn vivvy_store_rebuild_index(store: *const CVivvyStore) -> c_int {
+    let outcome = run_guarded(AssertUnwindSafe(|| -> Result<(), FfiError> {
+        unsafe { store_ref(store)? }.rebuild_index()?;
+        Ok(())
+    }));
+
+    match outcome {
+        Ok(()) => 0,
         Err(code) => code,
     }
 }

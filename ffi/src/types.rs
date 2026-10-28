@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use vivvy_memory::{MemoryKind, MemoryRecord};
 
 fn default_max_recall_limit() -> usize {
@@ -55,6 +55,64 @@ pub struct InsertRecordJson {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub source: HashMap<String, serde_json::Value>,
+}
+
+/// Scope shared by get, forget, and batch-forget requests.
+#[derive(Debug, Deserialize)]
+pub struct ScopeJson {
+    pub tenant_id: String,
+    pub namespace: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+}
+
+/// JSON portion of an update request. The optional replacement embedding is
+/// supplied separately as a raw float buffer, just like inserts and recall.
+#[derive(Debug, Deserialize)]
+pub struct UpdateJson {
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    pub tenant_id: String,
+    pub namespace: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    pub id: String,
+    pub expected_revision: u64,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub importance: Option<f32>,
+    #[serde(default, deserialize_with = "deserialize_expiration_update")]
+    pub expires_at_ms: Option<ExpirationUpdateJson>,
+    #[serde(default)]
+    pub metadata_patch: Option<HashMap<String, serde_json::Value>>,
+}
+
+/// The update wire format distinguishes an omitted expiry (leave it as-is),
+/// an integer expiry (set it), and JSON null (clear it).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ExpirationUpdateJson {
+    Value(i64),
+    Clear(()),
+}
+
+fn deserialize_expiration_update<'de, D>(
+    deserializer: D,
+) -> Result<Option<ExpirationUpdateJson>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(match Option::<i64>::deserialize(deserializer)? {
+        Some(value) => ExpirationUpdateJson::Value(value),
+        None => ExpirationUpdateJson::Clear(()),
+    }))
 }
 
 fn default_true() -> bool {
@@ -176,6 +234,25 @@ pub struct ScoredMemoryJson {
     pub explanation: Option<ExplanationJson>,
 }
 
+/// A stored memory returned by `vivvy_store_get`.
+#[derive(Debug, Serialize)]
+pub struct MemoryRecordJson {
+    pub id: String,
+    pub tenant_id: String,
+    pub namespace: String,
+    pub agent_id: Option<String>,
+    pub user_id: Option<String>,
+    pub kind: String,
+    pub content: String,
+    pub importance: f32,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
+    pub revision: u64,
+    pub metadata: HashMap<String, serde_json::Value>,
+    pub source: HashMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExplanationJson {
     pub total_score: f32,
@@ -232,5 +309,58 @@ impl From<&MemoryRecord> for ScoredMemoryJson {
             score: 0.0,
             explanation: None,
         }
+    }
+}
+
+impl From<&MemoryRecord> for MemoryRecordJson {
+    fn from(r: &MemoryRecord) -> Self {
+        Self {
+            id: r.id.clone(),
+            tenant_id: r.scope.tenant_id().to_string(),
+            namespace: r.scope.namespace().to_string(),
+            agent_id: r.scope.agent_id().map(str::to_string),
+            user_id: r.scope.user_id().map(str::to_string),
+            kind: kind_to_str(r.kind).to_string(),
+            content: r.content.clone(),
+            importance: r.importance,
+            created_at_ms: r.created_at_ms,
+            updated_at_ms: r.updated_at_ms,
+            expires_at_ms: r.expires_at_ms,
+            revision: r.revision,
+            metadata: r.metadata.clone(),
+            source: r.source.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExpirationUpdateJson, UpdateJson};
+
+    #[test]
+    fn update_expiry_preserves_omitted_set_and_clear_states() {
+        let omitted: UpdateJson = serde_json::from_str(
+            r#"{"tenant_id":"t","namespace":"n","id":"id","expected_revision":1}"#,
+        )
+        .unwrap();
+        assert!(omitted.expires_at_ms.is_none());
+
+        let clear: UpdateJson = serde_json::from_str(
+            r#"{"tenant_id":"t","namespace":"n","id":"id","expected_revision":1,"expires_at_ms":null}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            clear.expires_at_ms,
+            Some(ExpirationUpdateJson::Clear(()))
+        ));
+
+        let set: UpdateJson = serde_json::from_str(
+            r#"{"tenant_id":"t","namespace":"n","id":"id","expected_revision":1,"expires_at_ms":123}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            set.expires_at_ms,
+            Some(ExpirationUpdateJson::Value(123))
+        ));
     }
 }

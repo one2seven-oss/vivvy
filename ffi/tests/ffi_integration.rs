@@ -8,9 +8,15 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use vivvy_ffi::index::{
+    vivvy_index_close, vivvy_index_delete, vivvy_index_insert, vivvy_index_insert_batch,
+    vivvy_index_open, vivvy_index_search, CVivvyIndex,
+};
 use vivvy_ffi::store::{
-    vivvy_free_string, vivvy_last_error_message, vivvy_store_close, vivvy_store_insert,
-    vivvy_store_open, vivvy_store_recall, vivvy_store_vacuum, CVivvyStore,
+    vivvy_free_string, vivvy_last_error_message, vivvy_store_close, vivvy_store_forget_batch,
+    vivvy_store_get, vivvy_store_health, vivvy_store_insert, vivvy_store_insert_batch,
+    vivvy_store_open, vivvy_store_rebuild_index, vivvy_store_recall, vivvy_store_update,
+    vivvy_store_vacuum, CVivvyStore,
 };
 
 fn cstr(s: &str) -> CString {
@@ -161,6 +167,161 @@ fn vacuum_on_a_fresh_store_purges_nothing() {
         assert_eq!(code, 0, "vacuum failed: {}", last_error());
         assert_eq!(purged, 0);
         vivvy_store_close(store);
+    }
+}
+
+#[test]
+fn memory_store_crud_batch_health_and_rebuild_roundtrip() {
+    unsafe {
+        let (store, _dir) = open_test_store(2);
+        let records = cstr(
+            r#"[
+                {"tenant_id":"acme","namespace":"default","content":"first"},
+                {"tenant_id":"acme","namespace":"default","content":"second"}
+            ]"#,
+        );
+        let vectors: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        let mut out_ids: *mut c_char = ptr::null_mut();
+        let code = vivvy_store_insert_batch(
+            store,
+            records.as_ptr(),
+            vectors.as_ptr(),
+            2,
+            2,
+            &mut out_ids,
+        );
+        assert_eq!(code, 0, "batch insert failed: {}", last_error());
+        let ids: Vec<String> = serde_json::from_str(&CStr::from_ptr(out_ids).to_string_lossy())
+            .expect("batch result must be a JSON ID array");
+        vivvy_free_string(out_ids);
+        assert_eq!(ids.len(), 2);
+
+        let scope = cstr(r#"{"tenant_id":"acme","namespace":"default"}"#);
+        let id = cstr(&ids[0]);
+        let mut out_record: *mut c_char = ptr::null_mut();
+        let code = vivvy_store_get(store, scope.as_ptr(), id.as_ptr(), &mut out_record);
+        assert_eq!(code, 0, "get failed: {}", last_error());
+        let initial: serde_json::Value =
+            serde_json::from_str(&CStr::from_ptr(out_record).to_string_lossy()).unwrap();
+        vivvy_free_string(out_record);
+        assert_eq!(initial["content"], "first");
+        assert_eq!(initial["revision"], 1);
+
+        let update = cstr(&format!(
+            r#"{{"tenant_id":"acme","namespace":"default","id":"{}","expected_revision":1,"content":"updated"}}"#,
+            ids[0]
+        ));
+        let code = vivvy_store_update(store, update.as_ptr(), ptr::null(), 0);
+        assert_eq!(code, 0, "update failed: {}", last_error());
+
+        let mut out_updated: *mut c_char = ptr::null_mut();
+        let code = vivvy_store_get(store, scope.as_ptr(), id.as_ptr(), &mut out_updated);
+        assert_eq!(code, 0, "get after update failed: {}", last_error());
+        let updated: serde_json::Value =
+            serde_json::from_str(&CStr::from_ptr(out_updated).to_string_lossy()).unwrap();
+        vivvy_free_string(out_updated);
+        assert_eq!(updated["content"], "updated");
+        assert_eq!(updated["revision"], 2);
+
+        let mut out_health: *mut c_char = ptr::null_mut();
+        let code = vivvy_store_health(store, &mut out_health);
+        assert_eq!(code, 0, "health failed: {}", last_error());
+        let health: serde_json::Value =
+            serde_json::from_str(&CStr::from_ptr(out_health).to_string_lossy()).unwrap();
+        vivvy_free_string(out_health);
+        assert_eq!(health["total_active_records"], 2);
+
+        let code = vivvy_store_rebuild_index(store);
+        assert_eq!(code, 0, "rebuild failed: {}", last_error());
+
+        let ids_json = cstr(&serde_json::to_string(&ids).unwrap());
+        let code = vivvy_store_forget_batch(store, scope.as_ptr(), ids_json.as_ptr());
+        assert_eq!(code, 0, "batch forget failed: {}", last_error());
+
+        let mut out_missing: *mut c_char = ptr::null_mut();
+        let code = vivvy_store_get(store, scope.as_ptr(), id.as_ptr(), &mut out_missing);
+        assert_eq!(code, 0, "get after forget failed: {}", last_error());
+        assert_eq!(CStr::from_ptr(out_missing).to_bytes(), b"null");
+        vivvy_free_string(out_missing);
+
+        vivvy_store_close(store);
+    }
+}
+
+#[test]
+fn vector_index_insert_filter_search_and_delete_roundtrip() {
+    unsafe {
+        let config = cstr(r#"{"dimensions":2,"metric":"l2"}"#);
+        let mut index: *mut CVivvyIndex = ptr::null_mut();
+        assert_eq!(
+            vivvy_index_open(config.as_ptr(), &mut index),
+            0,
+            "open: {}",
+            last_error()
+        );
+
+        let red = cstr(r#"{"color":"red"}"#);
+        let red_vector = [1.0f32, 0.0];
+        let mut red_id = 0u64;
+        assert_eq!(
+            vivvy_index_insert(index, red_vector.as_ptr(), 2, red.as_ptr(), &mut red_id),
+            0,
+            "insert: {}",
+            last_error()
+        );
+
+        let blue = cstr(r#"{"color":"blue"}"#);
+        let blue_vector = [0.0f32, 1.0];
+        let mut blue_id = 0u64;
+        assert_eq!(
+            vivvy_index_insert(index, blue_vector.as_ptr(), 2, blue.as_ptr(), &mut blue_id),
+            0,
+            "insert: {}",
+            last_error()
+        );
+
+        let batch_vector = [0.5f32, 0.5];
+        let mut out_batch_ids: *mut c_char = ptr::null_mut();
+        assert_eq!(
+            vivvy_index_insert_batch(index, batch_vector.as_ptr(), 2, 1, &mut out_batch_ids),
+            0,
+            "batch insert: {}",
+            last_error()
+        );
+        let batch_ids: Vec<u64> =
+            serde_json::from_str(&CStr::from_ptr(out_batch_ids).to_string_lossy()).unwrap();
+        vivvy_free_string(out_batch_ids);
+        assert_eq!(batch_ids.len(), 1);
+
+        let filter = cstr(r#"{"eq":{"field":"color","value":"red"}}"#);
+        let mut out_results: *mut c_char = ptr::null_mut();
+        assert_eq!(
+            vivvy_index_search(
+                index,
+                red_vector.as_ptr(),
+                2,
+                5,
+                filter.as_ptr(),
+                &mut out_results
+            ),
+            0,
+            "search: {}",
+            last_error()
+        );
+        let results: serde_json::Value =
+            serde_json::from_str(&CStr::from_ptr(out_results).to_string_lossy()).unwrap();
+        vivvy_free_string(out_results);
+        assert_eq!(results.as_array().unwrap()[0]["id"], red_id);
+
+        let mut deleted = 0;
+        assert_eq!(
+            vivvy_index_delete(index, red_id, &mut deleted),
+            0,
+            "delete: {}",
+            last_error()
+        );
+        assert_eq!(deleted, 1);
+        vivvy_index_close(index);
     }
 }
 
