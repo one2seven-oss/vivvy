@@ -1,0 +1,14 @@
+[package]
+name = "vivvy-embedder"
+version = "0.1.1-alpha.1"
+edition = "2021"
+license = "BUSL-1.1"
+description = "Embedding-provider interface for Vivvy applications"
+repository = "https://github.com/one2seven-oss/vivvy"
+homepage = "https://github.com/one2seven-oss/vivvy"
+readme = "README.md"
+keywords = ["embeddings", "ai", "llm", "vector-search"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+thiserror = "2"

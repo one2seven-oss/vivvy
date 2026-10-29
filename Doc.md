@@ -2,7 +2,7 @@
 
 Vivvy is a local, durable long-term memory (LTM) runtime and single-machine vector engine engineered specifically for autonomous AI agents and local LLM applications. It provides zero-network, daemonless, crash-safe memory persistence combined with fast approximate nearest neighbor (ANN) vector retrieval.
 
-This document serves as the authoritative, production-grade guide for integrating, operating, and managing Vivvy, with primary focus on Python code integration (`vivvy-py`).
+This document serves as the authoritative guide for integrating, operating, and managing Vivvy through its unified Python, Go, TypeScript, and Rust SDKs.
 
 ---
 
@@ -40,10 +40,11 @@ This document serves as the authoritative, production-grade guide for integratin
    - [Pattern C: Episodic Memory Buffer with Expiration](#pattern-c-episodic-memory-buffer-with-expiration)
    - [Pattern D: High-Throughput Batch Ingestion Pipeline](#pattern-d-high-throughput-batch-ingestion-pipeline)
    - [Pattern E: Background Maintenance Worker (Health & Vacuum)](#pattern-e-background-maintenance-worker-health--vacuum)
-4. [Rust Core Reference (`vivvy-memory` & `vivvy-core`)](#4-rust-core-reference-vivvy-memory--vivvy-core)
+4. [Rust SDK Reference](#4-rust-sdk-reference-vivvy-vivvy-memory-vivvy-core--vivvy-embedder)
    - [Rust Crate Architecture](#rust-crate-architecture)
    - [Rust MemoryStore Reference](#rust-memorystore-reference)
    - [Rust VivvyIndex Vector Reference](#rust-vivvyindex-vector-reference)
+   - [Go and TypeScript SDK Reference](#4b-go-and-typescript-sdk-reference)
 5. [Storage Schemas, Binary Formats & Data Models](#5-storage-schemas-binary-formats--data-models)
    - [SQLite Canonical Schema (`memories`, `operations`, `memories_fts`)](#sqlite-canonical-schema-memories-operations-memories_fts)
    - [Sealed Segment File Format (`.vivvy`)](#sealed-segment-file-format-vivvy)
@@ -82,14 +83,36 @@ Vivvy is built on three fundamental architectural guarantees:
 
 ### Workspace Package Layout
 
-Vivvy is organized into four specialized packages:
+Vivvy exposes a unified SDK plus focused Rust crates. All public alpha packages
+are versioned `0.1.1-alpha.1` (Python uses the PEP 440 equivalent `0.1.1a1`).
 
 | Package | Path | Responsibility |
 | :--- | :--- | :--- |
+| **`vivvy`** | `unified/` | Batteries-included Rust facade re-exporting focused services behind feature flags. Python and TypeScript use the same unified name in their own registries. |
+| **`vivvy-embedder`** | `embedders/` | Provider-neutral Rust `Embedder` contract. Go and TypeScript also include native OpenAI/Ollama adapters. |
 | **`vivvy-py`** | `py/` | Native Python extension module providing high-level `vivvy.MemoryStore` and low-level `vivvy.Index` classes with GIL release. |
 | **`vivvy-memory`** | `ltm/` | High-level durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, 2-phase operation journal, hybrid recall (FTS5 + HNSW vector RRF), explainable 4-factor scoring, and MMR diversity reranking. |
 | **`vivvy-core`** | `vec/` | High-throughput in-process vector engine: sharded HNSW graphs, Roaring bitmap metadata filters, 64-bit ID safety, atomic sealed segments (`.vivvy`), WAL, and auto-compactor. |
+| **`vivvy-ffi`** | `ffi/` | Internal C ABI exposing both durable memory and low-level vector-index operations to Go and Node-API. |
 | **`bench`** | `sim/` | Synthetic data benchmark suite for measuring QPS, latency, startup recovery, and ground-truth recall accuracy. |
+
+### Choosing a package
+
+| Need | Install/use |
+| --- | --- |
+| Durable agent memory, hybrid recall, revisions, context formatting | Unified `vivvy` / `MemoryStore` |
+| HNSW vector search with application-owned records | `vivvy-core` / `VectorIndex` |
+| Minimal durable memory dependency in Rust | `vivvy-memory` |
+| Only an embedding-provider contract in Rust | `vivvy-embedder` |
+| Everything in Rust | `vivvy` with default features |
+
+```toml
+[dependencies]
+vivvy = "0.1.1-alpha.1"
+
+# Or a focused Rust surface:
+vivvy = { version = "0.1.1-alpha.1", default-features = false, features = ["core"] }
+```
 
 ---
 
@@ -820,16 +843,24 @@ def run_maintenance_loop(store: vivvy.MemoryStore, check_interval_seconds: int =
 
 ---
 
-## 4. Rust Core Reference (`vivvy-memory` & `vivvy-core`)
+## 4. Rust SDK Reference (`vivvy`, `vivvy-memory`, `vivvy-core`, & `vivvy-embedder`)
 
-While Python is the primary user-facing interface, Vivvy's underlying Rust engine (`vivvy-memory` and `vivvy-core`) can be used directly in Rust applications.
+Rust users can choose the unified `vivvy` facade or depend directly on the
+focused crates. The facade re-exports each service as `vivvy::core`,
+`vivvy::memory`, and `vivvy::embedder`; use `vivvy::prelude::*` for common
+types.
 
 ### Rust Crate Architecture
 
 ```toml
 [dependencies]
-vivvy-memory = { path = "../ltm" }
-vivvy-core = { path = "../vec" }
+# Unified default
+vivvy = "0.1.1-alpha.1"
+
+# Or focused crates
+vivvy-memory = "0.1.1-alpha.1"
+vivvy-core = "0.1.1-alpha.1"
+vivvy-embedder = "0.1.1-alpha.1"
 ```
 
 ---
@@ -905,6 +936,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+---
+
+## 4b. Go and TypeScript SDK Reference
+
+Both language SDKs expose the unified surface: `MemoryStore` for durable
+agent memory and a raw vector index (`Index` in Go, `VectorIndex` in
+TypeScript) for applications that own their own records and metadata.
+
+### Go
+
+Release the Go module by tag (`go/v0.1.1-alpha.1` and `v0.1.1-alpha.1`) and use the static library for
+the matching platform from the GitHub release.
+
+```go
+store, err := vivvy.Open("./agent_data", vivvy.OpenConfig{
+    Dimensions: 768, EmbeddingModel: "text-embedding-3-small",
+})
+// Store supports InsertBatch, Get, Update, Forget, ForgetBatch, Health,
+// RebuildIndex, Backup, Vacuum, and hybrid Recall.
+
+index, err := vivvy.OpenIndex(vivvy.IndexConfig{Dimensions: 768, Metric: "cosine"})
+id, err := index.Insert(vector, map[string]string{"category": "docs"})
+hits, err := index.Search(query, 10, &vivvy.Filter{
+    Eq: &vivvy.FilterEquals{Field: "category", Value: "docs"},
+})
+defer index.Close()
+_ = id
+_ = hits
+```
+
+Go text helpers accept any `Embedder`; the bundled OpenAI and Ollama adapters
+are native Go HTTP clients and validate model/dimension compatibility before
+writing to a store.
+
+### TypeScript
+
+```typescript
+const store = MemoryStore.openSync({
+  path: './agent_data', dimensions: 768, embeddingModel: 'text-embedding-3-small',
+});
+const ids = await store.rememberBatch(records, vectors);
+const scope = { tenantId: 'acme', namespace: 'docs' };
+const record = store.get(scope, ids[0]);
+store.update({ ...scope, id: ids[0], expectedRevision: record!.revision, content: 'revised' });
+
+const index = VectorIndex.open({ dimensions: 768, metric: 'cosine' });
+const id = index.insert(new Float32Array(768), { category: 'docs' });
+const hits = index.search(new Float32Array(768), 10, {
+  eq: { field: 'category', value: 'docs' },
+});
+index.delete(id);
+index.close();
+```
+
+`Float32Array` input avoids JSON vector encoding, but the Node-API bridge
+copies it into Rust-owned memory before insertion. `remember`, `recall`, and
+`formatContext` are worker-backed async operations; lifecycle and maintenance
+methods are synchronous native calls and should be scheduled away from
+latency-sensitive request handlers.
 
 ---
 
@@ -1064,8 +1155,11 @@ cargo test --workspace
 # Run zero-warning Clippy check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Run Python PyO3 integration test suite (44 tests)
-pytest
+# Run the Rust + Go + TypeScript binding contract matrix on a Unix-like host
+make verify
+
+# Run Python PyO3 integration test suite
+pytest py/
 ```
 
 ---
@@ -1153,13 +1247,13 @@ A `Result::Err` branch, a filter that excludes records, a revision-conflict reje
 
 **8. Dependencies are minimal, and every non-obvious one is justified in place.**
 
-A new `Cargo.toml`/`pyproject.toml`/`go.mod` dependency should be load-bearing, not speculative. When a dependency's presence isn't self-explanatory, say why in a comment right next to it — see `ffi/Cargo.toml`'s note on `vivvy-core` (declared but not yet directly used, kept for a future low-level `Index` FFI) as the pattern: a reviewer should never have to ask "why is this here?".
+A new `Cargo.toml`/`pyproject.toml`/`go.mod` dependency should be load-bearing, not speculative. When a dependency's presence isn't self-explanatory, say why in a comment right next to it. The FFI crate directly uses both `vivvy-memory` and `vivvy-core`; provider clients stay in language-native SDK layers rather than the C ABI.
 
 ---
 
 ### 8.2 Rust Guide (`vec/`, `ltm/`, `ffi/`, `sim/`)
 
-**Crate boundaries.** Each crate owns exactly one bounded responsibility: `vivvy-core` (`vec/`) is the low-level, storage-and-concurrency-aware vector engine; `vivvy-memory` (`ltm/`) is the durable, multi-tenant memory runtime built on top of it; `vivvy-ffi` (`ffi/`) is a translation-only C ABI over `vivvy-memory`; `bench` (`sim/`) is a synthetic benchmark harness. New functionality goes into the crate that owns the responsibility — a new scoring heuristic belongs in `ltm`, not in `ffi` or a binding.
+**Crate boundaries.** `vivvy` (`unified/`) is a feature-gated facade; `vivvy-core` (`vec/`) owns low-level vector search; `vivvy-memory` (`ltm/`) owns durable memory; `vivvy-embedder` (`embedders/`) owns the provider-neutral Rust trait; `vivvy-ffi` (`ffi/`) translates both memory and vector operations into C ABI; and `bench` (`sim/`) is a synthetic benchmark harness. New functionality goes into its owning crate — scoring belongs in `ltm`, raw ANN behavior in `vec`, and never in a binding.
 
 **Error handling.**
 - Every public error type is a `thiserror`-derived enum with a human-readable `#[error("...")]` message *and* a stable code (`ErrorCode` in `ltm`; the FFI's own `i32` codes in `ffi`) — see §8.1 rule 2.
@@ -1261,7 +1355,10 @@ All three are wired into `make go-fmt-check` / `make go-vet` / `make go-test(-ra
 
 **Asynchronous event loop offloading.** Vector distance calculations and SQLite WAL commits must never block Node's single-threaded event loop. All asynchronous operations (`store.remember`, `store.recall`, `store.formatContext`) dispatch onto worker threads via `napi_create_async_work` and return native Promises.
 
-**Zero-copy vector passing.** Embedding vectors are ingested directly as `Float32Array` typed arrays, passing contiguous memory slices directly to the C ABI without JSON serialization overhead.
+**Typed-vector passing.** Embedding vectors are supplied as `Float32Array`
+without JSON serialization overhead. The Node-API bridge copies them into
+Rust-owned memory before durable/index insertion, so callers must not assume
+literal zero-copy retention.
 
 **Error handling.** Every failure thrown by the native layer surfaces as a typed `VivvyError` whose `.code` property maps 1:1 to `VivvyErrorCode` (mirroring `vivvy_memory::ErrorCode` and `vivvy.h`). Callers branch on numeric codes rather than parsing string messages:
 ```typescript
@@ -1285,7 +1382,7 @@ bun test ts/tests/  # execute under Bun test runner
 
 ## 9. Licensing & Commercial Terms (BSL-1.1)
 
-Vivvy workspace packages (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `vivvy-ffi`, `vivvy-go`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)**. See [`LICENSE`](LICENSE) for the full license text.
+Vivvy public packages (`vivvy`, `vivvy-core`, `vivvy-memory`, `vivvy-embedder`, and language SDKs) are published under **The Business Source License 1.1 (BSL-1.1)**. Internal FFI and benchmark artifacts use the same license. See [`LICENSE`](LICENSE) for the full license text.
 
 ### Business Source License 1.1 Summary
 

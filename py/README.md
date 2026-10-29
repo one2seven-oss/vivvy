@@ -1,9 +1,9 @@
-# vivvy-vdb
+# vivvy
 
 **Vector search that lives on one machine.** [Vivvy](https://github.com/one2seven-oss/vivvy)'s Python bindings: a local, durable long-term memory (LTM) runtime and single-machine vector engine for AI agents, built on a Rust core via [PyO3](https://pyo3.rs). No cloud database, no network hop, no daemon process to run alongside your app.
 
 ```bash
-pip install vivvy-vdb
+pip install vivvy
 ```
 
 Two entry points, both in the `vivvy` module:
@@ -99,7 +99,7 @@ hits = index.search(query=[0.1] * 768, k=5, filter={"category": "electronics"})
 
 ## Documentation
 
-The full guide — every `MemoryStore`/`Index` method, memory kinds, production agent patterns (RAG retrieval, multi-tenant chat, episodic buffers, batch ingestion, background maintenance), on-disk formats, and the Rust/Go bindings this same engine also powers — lives in [`Doc.md`](https://github.com/one2seven-oss/vivvy/blob/main/Doc.md) in the main repository.
+The full guide — every `MemoryStore`/`Index` method, memory kinds, production agent patterns (RAG retrieval, multi-tenant chat, episodic buffers, batch ingestion, background maintenance), on-disk formats, and the Rust/Go/TypeScript SDKs this same engine also powers — lives in [`Doc.md`](https://github.com/one2seven-oss/vivvy/blob/main/Doc.md) in the main repository.
 
 ## License
 

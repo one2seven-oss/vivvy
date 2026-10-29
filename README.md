@@ -3,7 +3,7 @@
   <br><br>
 
   [![Crates.io](https://img.shields.io/crates/v/vivvy-core?label=vivvy-core)](https://crates.io/crates/vivvy-core)
-  [![PyPI](https://img.shields.io/badge/pypi-vivvy--vdb-blue)](https://pypi.org/project/vivvy-vdb/)
+  [![PyPI](https://img.shields.io/pypi/v/vivvy)](https://pypi.org/project/vivvy/)
   [![License](https://img.shields.io/badge/license-BSL--1.1-green)](LICENSE)
   [![Rust](https://img.shields.io/badge/rust-1.81%2B-orange)](https://www.rust-lang.org)
   [![HNSW](https://img.shields.io/badge/index-HNSW-8A2BE2)](#)
@@ -11,7 +11,7 @@
   [![FTS5](https://img.shields.io/badge/hybrid-FTS5%20%2B%20Vector%20RRF-blue)](#)
   [![PyO3](https://img.shields.io/badge/bindings-PyO3-yellow)](#)
   [![Go](https://img.shields.io/badge/bindings-cgo-00ADD8)](go)
-  [![Release](https://img.shields.io/badge/status-v0.1.0--beta%20Ready-brightgreen)](#)
+  [![Release](https://img.shields.io/badge/status-v0.1.1--alpha%20Ready-brightgreen)](#)
 </div>
 
 A local, durable long-term memory (LTM) runtime and single-machine vector engine for AI agents. No cloud databases, no network latency, no external daemons. Rust core with PyO3 Python bindings and Go bindings via a pre-compiled static C-FFI library.
@@ -22,12 +22,14 @@ A local, durable long-term memory (LTM) runtime and single-machine vector engine
 
 | Crate / Package | Path | Responsibility |
 | :--- | :--- | :--- |
+| **`vivvy`** | [`unified/`](unified) | Batteries-included Rust facade: re-exports vector search, durable memory, and embedder interfaces behind feature flags. |
 | **`vivvy-memory`** | [`ltm/`](ltm) | Durable LTM runtime: multi-tenant isolation, SQLite WAL canonical store, operation journal, hybrid recall (FTS5 + HNSW vector RRF), configurable 4-factor scoring & MMR diversity. |
 | **`vivvy-core`** | [`vec/`](vec) | In-process vector engine: HNSW graph search, Roaring bitmap filters, 64-bit ID safety, atomic segment manifests & WAL. |
+| **`vivvy-embedder`** | [`embedders/`](embedders) | Provider-neutral Rust embedding interface; language SDKs supply native provider adapters. |
 | **`vivvy-py`** | [`py/`](py) | PyO3 Python bindings exposing `vivvy.MemoryStore` and low-level `vivvy.Index` with GIL release. |
-| **`vivvy-ffi`** | [`ffi/`](ffi) | `extern "C"` layer (staticlib + cdylib) exposing `MemoryStore` as a panic-safe, JSON-in/JSON-out C ABI — see [`go/include/vivvy.h`](go/include/vivvy.h). |
+| **`vivvy-ffi`** | [`ffi/`](ffi) | Internal `extern "C"` layer (staticlib + cdylib) exposing memory and low-level vector APIs to language bindings. |
 | **`vivvy-go`** | [`go/`](go) | Go bindings over `vivvy-ffi` via cgo and a pre-compiled static library — `go get`, no Rust toolchain or daemon required. |
-| **`vivvy-ts`** | [`ts/`](ts) | TypeScript & Node.js bindings via Node-API — zero-copy `Float32Array`, async worker pool, and typed embedder adapters. |
+| **`vivvy-ts`** | [`ts/`](ts) | TypeScript & Node.js bindings via Node-API — typed `Float32Array` ingestion, memory/vector APIs, and typed embedder adapters. |
 | **`bench`** | [`sim/`](sim) | Synthetic data benchmark suite for QPS, latency, and ground-truth recall verification. |
 
 ---
@@ -165,6 +167,9 @@ for (const item of recall.items) {
 # Run Rust workspace test suite (60 unit, integration & security tests)
 cargo test --workspace
 
+# Run the full Rust + Go + TypeScript contract matrix on a supported Unix host
+make verify
+
 # Run zero-warning Clippy check
 cargo clippy --workspace --all-targets -- -D warnings
 
@@ -181,11 +186,24 @@ make ts-test
 cargo run --release --package bench
 ```
 
+## `0.1.1-alpha.1` Release Surface
+
+The alpha release publishes four Rust libraries with one aligned version:
+
+- `vivvy` — unified, batteries-included SDK.
+- `vivvy-core` — vector search only.
+- `vivvy-memory` — durable agent memory, built on `vivvy-core`.
+- `vivvy-embedder` — provider-neutral embedding interface.
+
+Python and TypeScript expose the unified experience as `vivvy`; Go releases
+through the repository tag and its prebuilt native libraries. See
+[RELEASING.md](RELEASING.md) for the ordered release procedure.
+
 ---
 
 ## Licensing & Commercial Terms
 
-**Vivvy** components (`vivvy-core`, `vivvy-memory`, `vivvy-py`, `vivvy-ffi`, `vivvy-go`, `bench`) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
+**Vivvy** components (`vivvy`, `vivvy-core`, `vivvy-memory`, `vivvy-embedder`, language SDKs, and internal build artifacts) are published under **The Business Source License 1.1 (BSL-1.1)** (see [`LICENSE`](LICENSE)).
 
 ### Permitted Uses (BSL 1.1 Additional Use Grant)
 - **Non-Production & Evaluation**: Free use for development, testing, research, and evaluation.

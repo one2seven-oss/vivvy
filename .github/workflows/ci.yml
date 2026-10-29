@@ -20,3 +20,17 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings
+
+  typescript:
+    name: TypeScript Node-API parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install Node-API headers
+        run: sudo apt-get update && sudo apt-get install -y libnode-dev
+      - name: Build addon and run TypeScript parity suite
+        run: make ts-test

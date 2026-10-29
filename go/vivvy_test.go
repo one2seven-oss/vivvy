@@ -220,6 +220,102 @@ func TestFormatContext(t *testing.T) {
 	}
 }
 
+func TestBatchCRUDHealthAndRebuild(t *testing.T) {
+	s := openTestStore(t, 2)
+	records := []MemoryRecord{
+		{TenantID: "acme", Namespace: "default", Content: "first"},
+		{TenantID: "acme", Namespace: "default", Content: "second"},
+	}
+	ids, err := s.InsertBatch(records, [][]float32{{1, 0}, {0, 1}})
+	if err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	if len(ids) != 2 || ids[0] == "" || ids[1] == "" {
+		t.Fatalf("expected two IDs, got %v", ids)
+	}
+
+	scope := Scope{TenantID: "acme", Namespace: "default"}
+	record, err := s.Get(scope, ids[0])
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if record == nil || record.Content != "first" || record.Revision != 1 {
+		t.Fatalf("unexpected fetched record: %+v", record)
+	}
+
+	content := "updated"
+	if err := s.Update(UpdateRequest{
+		Scope: scope, ID: ids[0], ExpectedRevision: record.Revision, Content: &content,
+	}, nil); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	updated, err := s.Get(scope, ids[0])
+	if err != nil {
+		t.Fatalf("Get after Update: %v", err)
+	}
+	if updated == nil || updated.Content != content || updated.Revision != 2 {
+		t.Fatalf("unexpected updated record: %+v", updated)
+	}
+
+	health, err := s.Health()
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if !health.IsHealthy || health.TotalActiveRecords != 2 {
+		t.Fatalf("unexpected health: %+v", health)
+	}
+	if err := s.RebuildIndex(); err != nil {
+		t.Fatalf("RebuildIndex: %v", err)
+	}
+
+	if err := s.Forget(scope, ids[0]); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	missing, err := s.Get(scope, ids[0])
+	if err != nil {
+		t.Fatalf("Get after Forget: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("forgotten record must be hidden, got %+v", missing)
+	}
+	if err := s.ForgetBatch(scope, []string{ids[1]}); err != nil {
+		t.Fatalf("ForgetBatch: %v", err)
+	}
+}
+
+func TestLowLevelIndexRoundTrip(t *testing.T) {
+	idx, err := OpenIndex(IndexConfig{Dimensions: 2, Metric: "l2"})
+	if err != nil {
+		t.Fatalf("OpenIndex: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	redID, err := idx.Insert([]float32{1, 0}, map[string]string{"color": "red"})
+	if err != nil {
+		t.Fatalf("Insert(red): %v", err)
+	}
+	if _, err := idx.Insert([]float32{0, 1}, map[string]string{"color": "blue"}); err != nil {
+		t.Fatalf("Insert(blue): %v", err)
+	}
+	batchIDs, err := idx.InsertBatch([][]float32{{0.5, 0.5}})
+	if err != nil || len(batchIDs) != 1 {
+		t.Fatalf("InsertBatch: ids=%v err=%v", batchIDs, err)
+	}
+	results, err := idx.Search([]float32{1, 0}, 5, &Filter{
+		Eq: &FilterEquals{Field: "color", Value: "red"},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != redID {
+		t.Fatalf("unexpected filtered results: %+v", results)
+	}
+	deleted, err := idx.Delete(redID)
+	if err != nil || !deleted {
+		t.Fatalf("Delete: deleted=%t err=%v", deleted, err)
+	}
+}
+
 // -- backup & vacuum --------------------------------------------------------------------------
 
 func TestBackupAndReopen(t *testing.T) {
