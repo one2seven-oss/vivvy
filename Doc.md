@@ -83,8 +83,8 @@ Vivvy is built on three fundamental architectural guarantees:
 
 ### Workspace Package Layout
 
-Vivvy exposes a unified SDK plus focused Rust crates. All public beta packages
-are versioned `0.1.0-beta.1` (Python uses the PEP 440 equivalent `0.1.0b1`).
+Vivvy exposes a unified SDK plus focused Rust crates. All public alpha packages
+are versioned `0.1.1-alpha.1` (Python uses the PEP 440 equivalent `0.1.1a1`).
 
 | Package | Path | Responsibility |
 | :--- | :--- | :--- |
@@ -108,10 +108,10 @@ are versioned `0.1.0-beta.1` (Python uses the PEP 440 equivalent `0.1.0b1`).
 
 ```toml
 [dependencies]
-vivvy = "0.1.0-beta.1"
+vivvy = "0.1.1-alpha.1"
 
 # Or a focused Rust surface:
-vivvy = { version = "0.1.0-beta.1", default-features = false, features = ["core"] }
+vivvy = { version = "0.1.1-alpha.1", default-features = false, features = ["core"] }
 ```
 
 ---
@@ -855,12 +855,12 @@ types.
 ```toml
 [dependencies]
 # Unified default
-vivvy = "0.1.0-beta.1"
+vivvy = "0.1.1-alpha.1"
 
 # Or focused crates
-vivvy-memory = "0.1.0-beta.1"
-vivvy-core = "0.1.0-beta.1"
-vivvy-embedder = "0.1.0-beta.1"
+vivvy-memory = "0.1.1-alpha.1"
+vivvy-core = "0.1.1-alpha.1"
+vivvy-embedder = "0.1.1-alpha.1"
 ```
 
 ---
@@ -947,7 +947,7 @@ TypeScript) for applications that own their own records and metadata.
 
 ### Go
 
-Release the Go module by tag (`v0.1.0-beta.1`) and use the static library for
+Release the Go module by tag (`go/v0.1.1-alpha.1` and `v0.1.1-alpha.1`) and use the static library for
 the matching platform from the GitHub release.
 
 ```go

@@ -11,7 +11,7 @@
   [![FTS5](https://img.shields.io/badge/hybrid-FTS5%20%2B%20Vector%20RRF-blue)](#)
   [![PyO3](https://img.shields.io/badge/bindings-PyO3-yellow)](#)
   [![Go](https://img.shields.io/badge/bindings-cgo-00ADD8)](go)
-  [![Release](https://img.shields.io/badge/status-v0.1.0--beta%20Ready-brightgreen)](#)
+  [![Release](https://img.shields.io/badge/status-v0.1.1--alpha%20Ready-brightgreen)](#)
 </div>
 
 A local, durable long-term memory (LTM) runtime and single-machine vector engine for AI agents. No cloud databases, no network latency, no external daemons. Rust core with PyO3 Python bindings and Go bindings via a pre-compiled static C-FFI library.
@@ -186,9 +186,9 @@ make ts-test
 cargo run --release --package bench
 ```
 
-## `0.1.0-beta.1` Release Surface
+## `0.1.1-alpha.1` Release Surface
 
-The beta release publishes four Rust libraries with one aligned version:
+The alpha release publishes four Rust libraries with one aligned version:
 
 - `vivvy` — unified, batteries-included SDK.
 - `vivvy-core` — vector search only.

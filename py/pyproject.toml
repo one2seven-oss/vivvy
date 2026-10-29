@@ -4,14 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "vivvy"
-version = "0.1.0b1"
+version = "0.1.1a1"
 description = "Vector search that lives on one machine"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "BUSL-1.1"
 keywords = ["vector-search", "embeddings", "llm", "rag", "agent-memory", "ann", "hnsw"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",

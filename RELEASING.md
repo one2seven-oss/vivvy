@@ -1,4 +1,4 @@
-# Releasing Vivvy `0.1.0-beta.1`
+# Releasing Vivvy `0.1.1-alpha.1`
 
 This repository releases a unified SDK and focused Rust crates at the same
 version. Publishing is deliberately a human-authorized action; these steps do
@@ -47,11 +47,11 @@ then run that package's own `cargo publish --dry-run`. A local dry run cannot
 resolve a new path dependency at its release version until it is available in
 the registry; this is expected, not a packaging defect.
 
-Then publish the language SDKs at their ecosystem-equivalent beta version:
+Then publish the language SDKs at their ecosystem-equivalent alpha version:
 
-- PyPI: `vivvy==0.1.0b1`
-- npm: `vivvy@0.1.0-beta.1`
-- Go: tag `v0.1.0-beta.1` and publish the release; the existing release
+- PyPI: `vivvy==0.1.1a1`
+- npm: `vivvy@0.1.1-alpha.1`
+- Go: tag `go/v0.1.1-alpha.1` and `v0.1.1-alpha.1`, then publish the GitHub release; the existing release
   workflow attaches native static libraries for supported platforms.
 
 Do not publish any package until its manifest, changelog/release notes, and

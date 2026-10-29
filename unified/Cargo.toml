@@ -1,6 +1,6 @@
 [package]
 name = "vivvy"
-version = "0.1.0-beta.1"
+version = "0.1.1-alpha.1"
 edition = "2021"
 license = "BUSL-1.1"
 description = "Unified Vivvy agent memory, vector search, and embedding interfaces"
@@ -18,6 +18,6 @@ embedder = ["dep:vivvy-embedder"]
 full = ["core", "memory", "embedder"]
 
 [dependencies]
-vivvy-core = { version = "0.1.0-beta.1", path = "../vec", optional = true }
-vivvy-memory = { version = "0.1.0-beta.1", path = "../ltm", optional = true }
-vivvy-embedder = { version = "0.1.0-beta.1", path = "../embedders", optional = true }
+vivvy-core = { version = "0.1.1-alpha.1", path = "../vec", optional = true }
+vivvy-memory = { version = "0.1.1-alpha.1", path = "../ltm", optional = true }
+vivvy-embedder = { version = "0.1.1-alpha.1", path = "../embedders", optional = true }

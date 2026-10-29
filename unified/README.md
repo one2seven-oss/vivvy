@@ -5,7 +5,7 @@ and `vivvy-embedder` behind feature flags. Use the focused crates directly
 when an application only needs one service.
 
 ```toml
-vivvy = "0.1.0-beta.1"
+vivvy = "0.1.1-alpha.1"
 ```
 
 Use `default-features = false` plus `features = ["core"]`, `memory`, or

@@ -61,7 +61,7 @@ writes are sealed.
 
 ```toml
 [dependencies]
-vivvy-memory = "0.1.0-beta.1"
+vivvy-memory = "0.1.1-alpha.1"
 ```
 
 ## Quick start
