@@ -1,0 +1,59 @@
+name: Branch name
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate contribution branch name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate head branch
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          branch="$HEAD_REF"
+          slug='[a-z0-9]+(-[a-z0-9]+)*'
+
+          valid=false
+          if [[ "$branch" =~ ^(feat/(ltm|embedding|security|sdk|api|integrations|storage|runtime|vector-index)|fix/(ltm|storage|security|vector-index|runtime|api|sdk|integrations)|improve/(ltm|storage|vector-index|performance|architecture|sdk|runtime|api)|experiment/(retrieval|embedding|vector-index|architecture|performance|storage)|test/(ltm|storage|security|vector-index|integration))/$slug$ ]]; then
+            valid=true
+          elif [[ "$branch" =~ ^docs/($slug|(architecture|api|guides)/$slug)$ ]]; then
+            valid=true
+          elif [[ "$branch" =~ ^chore/($slug|(dependencies|build|tooling)/$slug)$ ]]; then
+            valid=true
+          elif [[ "$branch" =~ ^recovery/(security|storage|ltm)/$slug$ || "$branch" =~ ^review/$slug$ ]]; then
+            # Reserved for authorized maintainer workflows; repository rules enforce access.
+            valid=true
+          fi
+
+          if [[ "$valid" != true ]]; then
+            cat <<'EOF'
+          Invalid contribution branch name.
+
+          Use lowercase kebab-case and one of:
+            feat/<domain>/<description>
+            fix/<domain>/<description>
+            improve/<domain>/<description>
+            experiment/<domain>/<description>
+            docs/<description> or docs/<domain>/<description>
+            test/<domain>/<description>
+            chore/<description> or chore/<domain>/<description>
+
+          Examples: feat/ltm/hierarchical-recall, fix/security/tenant-isolation,
+          improve/storage/batch-write, experiment/retrieval/hybrid-search,
+          docs/architecture/overview, chore/dependencies/update-crates.
+
+          recovery/<security|storage|ltm>/<description> and review/<description>
+          are reserved for authorized maintainers.
+          EOF
+            exit 1
+          fi
+
+          echo "Branch name accepted: $branch"
