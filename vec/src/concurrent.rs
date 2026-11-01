@@ -52,7 +52,7 @@ impl VivvyIndex {
         metric: Metric,
         wal_path: Option<impl AsRef<Path>>,
         data_dir: Option<impl AsRef<Path>>,
-    ) -> Result<Self, WalError> {
+    ) -> Result<Self, VivvyError> {
         let shards = (0..NUM_SHARDS)
             .map(|_| RwLock::new(HnswIndex::new(dims, metric)))
             .collect::<Vec<_>>();
@@ -117,21 +117,14 @@ impl VivvyIndex {
 
                 for fname in seg_files {
                     let path = dir.join(&fname);
-                    match SealedSegment::open(&path) {
-                        Ok(seg) => {
-                            for idx in 0..seg.num_nodes() {
-                                if let Ok(id) = seg.id_at(idx) {
-                                    if id >= next_id {
-                                        next_id = id.saturating_add(1);
-                                    }
-                                }
-                            }
-                            initial_sealed.push(Arc::new(seg));
-                        }
-                        Err(e) => {
-                            warn!("Failed to open existing sealed segment {:?}: {:?}", path, e);
+                    let seg = SealedSegment::open_with_dims(&path, dims)?;
+                    for idx in 0..seg.num_nodes() {
+                        let id = seg.id_at(idx)?;
+                        if id >= next_id {
+                            next_id = id.saturating_add(1);
                         }
                     }
+                    initial_sealed.push(Arc::new(seg));
                 }
             }
         }
@@ -384,20 +377,17 @@ impl VivvyIndex {
         let sealed_list = self.sealed.load();
         for seg in sealed_list.iter().rev() {
             for idx in 0..seg.num_nodes() {
-                if let Ok(id) = seg.id_at(idx) {
-                    if tombstones.contains(id) || !seen_ids.insert(id) {
-                        continue;
-                    }
-                    let passes_filter = filter_bitmap.as_ref().is_none_or(|bm| bm.contains(id));
-                    if !passes_filter {
-                        continue;
-                    }
-                    if let Ok(v) = seg.vector_at(idx) {
-                        let d = distance::compute(metric, query, v);
-                        seen_ids.insert(id);
-                        results.push((id, d));
-                    }
+                let id = seg.id_at(idx)?;
+                if tombstones.contains(id) || !seen_ids.insert(id) {
+                    continue;
                 }
+                let passes_filter = filter_bitmap.as_ref().is_none_or(|bm| bm.contains(id));
+                if !passes_filter {
+                    continue;
+                }
+                let v = seg.vector_at(idx)?;
+                let d = distance::compute(metric, query, v);
+                results.push((id, d));
             }
         }
 
@@ -592,22 +582,26 @@ fn run_compaction(
     } else {
         let seg_filename = format!("seg-{}.vivvy", timestamp_ns());
         let seg_path = data_dir.join(&seg_filename);
+        let temp_path = data_dir.join(format!(".{seg_filename}.{}.tmp", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&seg_path)?;
+            .open(&temp_path)?;
         let writer = BufWriter::new(file.try_clone()?);
 
-        let mut seg_writer = SegmentWriter::new(writer, dims as u32, 16, 32);
+        let segment_dims = u32::try_from(dims).map_err(|_| VivvyError::DimensionMismatch)?;
+        let mut seg_writer = SegmentWriter::new(writer, segment_dims, 16, 32);
         for (id, vector) in &entries {
             seg_writer.push(*id, 0, vec![Vec::new()], vector.clone())?;
         }
         seg_writer.write()?;
         file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, &seg_path)?;
 
         (
             Manifest::new(vec![seg_filename]),
-            vec![Arc::new(SealedSegment::open(&seg_path)?)],
+            vec![Arc::new(SealedSegment::open_with_dims(&seg_path, dims)?)],
         )
     };
 
@@ -681,6 +675,7 @@ fn timestamp_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufWriter;
     use tempfile::tempdir;
 
     #[test]
@@ -697,6 +692,36 @@ mod tests {
         let hits = idx.search(&[1.0, 0.0, 0.0], 1).unwrap();
         assert!(!hits.is_empty());
         drop(idx);
+    }
+
+    #[test]
+    fn test_reopen_rejects_dimension_mismatched_segment() {
+        let dir = tempdir().unwrap();
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+        let filename = "wrong-dim.vivvy";
+        let path = segments_dir.join(filename);
+
+        let file = std::fs::File::create(&path).unwrap();
+        let writer = BufWriter::new(file);
+        let mut segment = SegmentWriter::new(writer, 4, 16, 32);
+        segment
+            .push(1, 0, vec![Vec::new()], vec![1.0, 2.0, 3.0, 4.0])
+            .unwrap();
+        segment.write().unwrap();
+        Manifest::new(vec![filename.to_string()])
+            .save(&segments_dir)
+            .unwrap();
+
+        assert!(matches!(
+            VivvyIndex::new(3, Metric::L2, None::<&Path>, Some(&segments_dir)),
+            Err(VivvyError::Segment(
+                crate::storage::segments::SegmentError::DimensionMismatch {
+                    expected: 3,
+                    found: 4
+                }
+            ))
+        ));
     }
 
     #[test]
