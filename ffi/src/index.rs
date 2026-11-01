@@ -188,8 +188,7 @@ pub unsafe extern "C" fn vivvy_index_open(
                 parse_metric(&config.metric)?,
                 config.wal_path.as_deref(),
                 config.data_dir.as_deref(),
-            )
-            .map_err(vivvy_core::error::VivvyError::Wal)?;
+            )?;
             Ok(Box::into_raw(Box::new(CVivvyIndex { inner: index })))
         },
     ));
