@@ -18,8 +18,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
       - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings
+
+  critical-regressions:
+    name: Security and persistence regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Run tenant-isolation regressions
+        run: cargo test -p vivvy-memory --test security_tests
+      - name: Run persistence and recovery regressions
+        run: |
+          cargo test -p vivvy-memory --test store_tests
+          cargo test -p vivvy-memory --test failure_tests
+
+  python:
+    name: Python bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create Python virtual environment
+        run: python -m venv .venv
+      - name: Install Python test tooling
+        run: .venv/bin/python -m pip install --upgrade pip maturin numpy pytest
+      - name: Build the native extension
+        run: . .venv/bin/activate && maturin develop --manifest-path py/Cargo.toml
+      - name: Run Python tests
+        # This is a correctness gate. The NumPy timing microbenchmark is
+        # intentionally run separately on a controlled performance host.
+        run: .venv/bin/python -m pytest py/tests -k "not microbenchmark"
 
   typescript:
     name: TypeScript Node-API parity
