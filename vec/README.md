@@ -16,7 +16,7 @@
 
 ```toml
 [dependencies]
-vivvy-core = "0.1.0-alpha"
+vivvy-core = "0.1.1-alpha.1"
 ```
 
 ## Quick start

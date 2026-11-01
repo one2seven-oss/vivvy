@@ -71,11 +71,22 @@ func main() {
 
 - `Open(path, OpenConfig) (*Store, error)`
 - `(*Store) Insert(MemoryRecord, vector []float32) (id string, error)`
+- `(*Store) InsertBatch([]MemoryRecord, [][]float32) ([]string, error)`
+- `(*Store) Get(Scope, id) (*MemoryRecord, error)`
+- `(*Store) Update(UpdateRequest, vector) error` — optimistic revision update
+- `(*Store) Forget` / `ForgetBatch` — immediate soft deletion
 - `(*Store) Recall(RecallOptions, vector []float32) (*RecallResult, error)` — hybrid vector + full-text search
 - `(*Store) FormatContext(RecallOptions, vector []float32, FormatOptions) (string, error)` — token-budgeted prompt rendering
 - `(*Store) Backup(targetPath string) error` — zero-downtime, crash-consistent copy
 - `(*Store) Vacuum(batchSize int) (purged int, error)` — physically purge tombstoned/expired records
+- `(*Store) Health() (*StoreHealth, error)` and `RebuildIndex() error`
+- `OpenIndex(IndexConfig) (*Index, error)` — standalone vector search with metadata filters
+- `RememberText`, `RememberTextBatch`, and `RecallText` with the `Embedder` interface
 - `(*Store) Close() error`
+
+Use the Go `OpenAIEmbedder` or `OllamaEmbedder` adapters when their configured
+model name and dimensions match the store. Provider calls remain in Go and do
+not cross the C ABI.
 
 A `*Store` is safe for concurrent use by multiple goroutines — Insert,
 Recall, FormatContext, Backup and Vacuum may all run concurrently against
@@ -99,4 +110,4 @@ human-readable `Message`; use `errors.As` to recover one.
 See the top-level [`Makefile`](../Makefile) (`make help`) and
 [`.github/workflows/go-ffi.yml`](../.github/workflows/go-ffi.yml). The
 library itself lives in [`../ffi`](../ffi), a thin `#[no_mangle] extern "C"`
-layer over the `vivvy-memory` Rust crate.
+layer over both the `vivvy-memory` and `vivvy-core` Rust crates.

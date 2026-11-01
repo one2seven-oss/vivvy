@@ -1,0 +1,23 @@
+[package]
+name = "vivvy"
+version = "0.1.1-alpha.1"
+edition = "2021"
+license = "BUSL-1.1"
+description = "Unified Vivvy agent memory, vector search, and embedding interfaces"
+repository = "https://github.com/one2seven-oss/vivvy"
+homepage = "https://github.com/one2seven-oss/vivvy"
+readme = "README.md"
+keywords = ["agent-memory", "vector-search", "embeddings", "rag", "hnsw"]
+categories = ["algorithms", "database"]
+
+[features]
+default = ["core", "memory", "embedder"]
+core = ["dep:vivvy-core"]
+memory = ["dep:vivvy-memory"]
+embedder = ["dep:vivvy-embedder"]
+full = ["core", "memory", "embedder"]
+
+[dependencies]
+vivvy-core = { version = "0.1.1-alpha.1", path = "../vec", optional = true }
+vivvy-memory = { version = "0.1.1-alpha.1", path = "../ltm", optional = true }
+vivvy-embedder = { version = "0.1.1-alpha.1", path = "../embedders", optional = true }

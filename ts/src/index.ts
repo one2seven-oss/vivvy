@@ -3,6 +3,7 @@
  */
 
 export { MemoryStore } from './store.ts';
+export { VectorIndex } from './vector-index.ts';
 export { VivvyError, VivvyErrorCode } from './errors.ts';
 export {
   DeterministicEmbedder,
@@ -12,7 +13,10 @@ export {
 export type {
   Embedder,
   MemoryKind,
+  MemoryScope,
   StoreConfig,
+  StoreHealth,
+  UpdateOptions,
   MemoryRecord,
   RecallExplanation,
   RecallItem,
@@ -23,4 +27,7 @@ export type {
   RememberOptions,
   RecallTextOptions,
   FormatContextTextOptions,
+  IndexConfig,
+  IndexFilter,
+  VectorSearchResult,
 } from './types.ts';

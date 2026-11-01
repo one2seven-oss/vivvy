@@ -62,6 +62,7 @@
 #define VIVVY_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,9 +90,12 @@ extern "C" {
 #define VIVVY_ERR_INVALID_INPUT 12
 #define VIVVY_ERR_STORE_IO_ERROR 13
 #define VIVVY_ERR_DATABASE_ERROR 14
+#define VIVVY_ERR_ENCRYPTION_FAILED 15
+#define VIVVY_ERR_DECRYPTION_FAILED 16
 
 /* Opaque handle to an open store. Only ever accessed through a pointer. */
 typedef struct VivvyStore VivvyStore;
+typedef struct VivvyIndex VivvyIndex;
 
 /*
  * Opens (or creates) a durable memory store at `path`.
@@ -131,6 +135,92 @@ void vivvy_store_close(VivvyStore *store);
  */
 int vivvy_store_insert(const VivvyStore *store, const char *record_json,
                         const float *vector, size_t dim, char **out_id);
+
+/*
+ * Atomically inserts `count` records. records_json is an array of the same
+ * objects accepted by vivvy_store_insert; vectors_flat contains `count`
+ * consecutive vectors, each of width dim. On success, out_ids_json receives
+ * an owned JSON array of generated IDs.
+ */
+int vivvy_store_insert_batch(const VivvyStore *store, const char *records_json,
+                              const float *vectors_flat, size_t dim, size_t count,
+                              char **out_ids_json);
+
+/*
+ * Looks up one active record in a scope.
+ *
+ * scope_json: {"tenant_id": <string>, "namespace": <string>,
+ *              "agent_id": <string, optional>, "user_id": <string, optional>}
+ *
+ * On success, out_record_json receives an owned JSON record, or the JSON
+ * literal null if no active record with that ID exists.
+ */
+int vivvy_store_get(const VivvyStore *store, const char *scope_json,
+                    const char *id, char **out_record_json);
+
+/*
+ * Atomically updates a record with optimistic concurrency.
+ *
+ * update_json: {"tenant_id":..., "namespace":..., "id":...,
+ *               "expected_revision": <uint>, "content": <string, optional>,
+ *               "kind": <string, optional>, "importance": <float, optional>,
+ *               "expires_at_ms": <int|null, optional>,
+ *               "metadata_patch": <object, optional>, "operation_id": <string, optional>}
+ *
+ * Pass vector=NULL and dim=0 to retain the current embedding. Otherwise it
+ * replaces the embedding. An omitted expires_at_ms retains the old expiry;
+ * a JSON null clears it. Returns VIVVY_ERR_REVISION_CONFLICT on stale writes.
+ */
+int vivvy_store_update(const VivvyStore *store, const char *update_json,
+                       const float *vector, size_t dim);
+
+/* Soft-delete one record, immediately hiding it from future reads. */
+int vivvy_store_forget(const VivvyStore *store, const char *scope_json,
+                       const char *id);
+
+/* Soft-delete a JSON array of IDs in one scope as a single transaction. */
+int vivvy_store_forget_batch(const VivvyStore *store, const char *scope_json,
+                             const char *ids_json);
+
+/* Returns an owned, privacy-safe JSON StoreHealth snapshot. */
+int vivvy_store_health(const VivvyStore *store, char **out_health_json);
+
+/* Rebuilds the in-memory vector accelerator from durable active records. */
+int vivvy_store_rebuild_index(const VivvyStore *store);
+
+/*
+ * Low-level vector index. config_json: {"dimensions": <uint>,
+ * "metric": "l2"|"cosine"|"dot", "wal_path": <string, optional>,
+ * "data_dir": <string, optional>}. The optional paths enable durable WAL
+ * replay and sealed-segment compaction; omit both for an in-memory index.
+ */
+int vivvy_index_open(const char *config_json, VivvyIndex **out_index);
+void vivvy_index_close(VivvyIndex *index);
+
+/* metadata_json is optional and, when supplied, is an object of string fields
+ * and values used by filtered search. out_id receives an auto-generated ID. */
+int vivvy_index_insert(const VivvyIndex *index, const float *vector, size_t dim,
+                       const char *metadata_json, uint64_t *out_id);
+int vivvy_index_insert_with_id(const VivvyIndex *index, uint64_t id,
+                               const float *vector, size_t dim);
+/* Inserts count consecutive vectors from vectors_flat (each with dim floats)
+ * and returns an owned JSON array of their generated uint64 IDs. */
+int vivvy_index_insert_batch(const VivvyIndex *index, const float *vectors_flat,
+                             size_t dim, size_t count, char **out_ids_json);
+int vivvy_index_delete(const VivvyIndex *index, uint64_t id,
+                       int *out_deleted);
+
+/*
+ * filter_json is optional. Its recursive grammar is one of:
+ * {"eq":{"field":"...","value":"..."}},
+ * {"in":{"field":"...","values":["..."]}},
+ * {"and":[<filter>,...]}, {"or":[<filter>,...]}, or {"not":<filter>}.
+ * On success out_results_json receives an owned JSON array of
+ * {"id": <uint64>, "distance": <float>} objects.
+ */
+int vivvy_index_search(const VivvyIndex *index, const float *query, size_t dim,
+                       size_t k, const char *filter_json, char **out_results_json);
+int vivvy_index_compact(const VivvyIndex *index);
 
 /*
  * Hybrid (vector + optional full-text) recall.

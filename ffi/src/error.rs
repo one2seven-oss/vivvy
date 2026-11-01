@@ -45,6 +45,7 @@ pub enum FfiError {
         source: serde_json::Error,
     },
     Memory(vivvy_memory::MemoryError),
+    Core(vivvy_core::error::VivvyError),
     Io(std::io::Error),
 }
 
@@ -74,6 +75,12 @@ impl FfiError {
                 ErrorCode::IoError => ERR_STORE_IO_ERROR,
                 ErrorCode::DatabaseError => ERR_DATABASE_ERROR,
             },
+            FfiError::Core(e) => match e {
+                vivvy_core::error::VivvyError::DimensionMismatch => ERR_DIMENSION_MISMATCH,
+                vivvy_core::error::VivvyError::Wal(_)
+                | vivvy_core::error::VivvyError::Segment(_)
+                | vivvy_core::error::VivvyError::Io(_) => ERR_STORE_IO_ERROR,
+            },
         }
     }
 
@@ -89,6 +96,7 @@ impl FfiError {
             }
             FfiError::Io(e) => format!("I/O error: {e}"),
             FfiError::Memory(e) => e.to_string(),
+            FfiError::Core(e) => e.to_string(),
         }
     }
 }
@@ -96,6 +104,12 @@ impl FfiError {
 impl From<vivvy_memory::MemoryError> for FfiError {
     fn from(e: vivvy_memory::MemoryError) -> Self {
         FfiError::Memory(e)
+    }
+}
+
+impl From<vivvy_core::error::VivvyError> for FfiError {
+    fn from(e: vivvy_core::error::VivvyError) -> Self {
+        FfiError::Core(e)
     }
 }
 

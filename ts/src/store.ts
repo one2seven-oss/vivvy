@@ -8,12 +8,16 @@ import type {
   FormatContextOptions,
   FormatContextTextOptions,
   MemoryKind,
+  MemoryRecord,
+  MemoryScope,
   RecallItem,
   RecallOptions,
   RecallResponse,
   RecallTextOptions,
   RememberOptions,
+  StoreHealth,
   StoreConfig,
+  UpdateOptions,
 } from './types.ts';
 
 // Resolve native addon path reliably across ESM and CJS
@@ -57,7 +61,7 @@ function loadNativeAddon() {
 }
 
 let nativeBinding: any = null;
-function getNative() {
+export function getNative() {
   if (!nativeBinding) {
     nativeBinding = loadNativeAddon();
   }
@@ -211,6 +215,98 @@ export class MemoryStore {
     } catch (err) {
       throw VivvyError.fromNativeError(err);
     }
+  }
+
+  /** Atomically store multiple records and embeddings. */
+  async rememberBatch(options: RememberOptions[], vectors: Float32Array[]): Promise<string[]> {
+    this.ensureOpen();
+    if (options.length !== vectors.length) {
+      throw new VivvyError(VivvyErrorCode.InvalidInput, 'options and vectors must have the same length');
+    }
+    if (options.length === 0) return [];
+    for (const vector of vectors) {
+      if (vector.length !== this.dimensions) {
+        throw new VivvyError(VivvyErrorCode.DimensionMismatch, `Vector dimension mismatch: expected ${this.dimensions}, got ${vector.length}`);
+      }
+    }
+    const flat = new Float32Array(options.length * this.dimensions);
+    vectors.forEach((vector, i) => flat.set(vector, i * this.dimensions));
+    try {
+      const native = getNative();
+      return JSON.parse(native.storeInsertBatchSync(
+        this._nativeHandle,
+        JSON.stringify(options.map((option) => this.marshalRemember(option))),
+        flat,
+        this.dimensions,
+        options.length,
+      ));
+    } catch (err) {
+      throw VivvyError.fromNativeError(err);
+    }
+  }
+
+  /** Fetch an active record, or null when it is absent or forgotten. */
+  get(scope: MemoryScope, id: string): MemoryRecord | null {
+    this.ensureOpen();
+    try {
+      const raw = JSON.parse(getNative().storeGetSync(this._nativeHandle, JSON.stringify(this.marshalScope(scope)), id));
+      return raw == null ? null : this.parseMemoryRecord(raw);
+    } catch (err) {
+      throw VivvyError.fromNativeError(err);
+    }
+  }
+
+  /** Update a record using its expected revision. Pass no vector to retain its embedding. */
+  update(options: UpdateOptions, vector?: Float32Array): void {
+    this.ensureOpen();
+    if (vector && vector.length !== this.dimensions) {
+      throw new VivvyError(VivvyErrorCode.DimensionMismatch, `Vector dimension mismatch: expected ${this.dimensions}, got ${vector.length}`);
+    }
+    const payload: Record<string, unknown> = {
+      tenant_id: options.tenantId, namespace: options.namespace, id: options.id,
+      expected_revision: options.expectedRevision,
+      agent_id: options.agentId ?? undefined, user_id: options.userId ?? undefined,
+      operation_id: options.operationId ?? undefined, content: options.content,
+      kind: options.kind, importance: options.importance, metadata_patch: options.metadataPatch,
+    };
+    if (Object.prototype.hasOwnProperty.call(options, 'expiresAtMs')) payload.expires_at_ms = options.expiresAtMs;
+    try {
+      getNative().storeUpdateSync(this._nativeHandle, JSON.stringify(payload), vector ?? null);
+    } catch (err) {
+      throw VivvyError.fromNativeError(err);
+    }
+  }
+
+  forget(scope: MemoryScope, id: string): void {
+    this.ensureOpen();
+    try { getNative().storeForgetSync(this._nativeHandle, JSON.stringify(this.marshalScope(scope)), id); }
+    catch (err) { throw VivvyError.fromNativeError(err); }
+  }
+
+  forgetBatch(scope: MemoryScope, ids: string[]): void {
+    this.ensureOpen();
+    try { getNative().storeForgetBatchSync(this._nativeHandle, JSON.stringify(this.marshalScope(scope)), JSON.stringify(ids)); }
+    catch (err) { throw VivvyError.fromNativeError(err); }
+  }
+
+  health(): StoreHealth {
+    this.ensureOpen();
+    try {
+      const raw = JSON.parse(getNative().storeHealthSync(this._nativeHandle));
+      return {
+        isHealthy: raw.is_healthy, totalActiveRecords: raw.total_active_records,
+        totalTombstonedRecords: raw.total_tombstoned_records,
+        pendingOperationsCount: raw.pending_operations_count,
+        indexRebuildRequired: raw.index_rebuild_required,
+        dbSizeBytes: raw.db_size_bytes, walSizeBytes: raw.wal_size_bytes,
+      };
+    } catch (err) { throw VivvyError.fromNativeError(err); }
+  }
+
+  rebuildIndex(): void {
+    this.ensureOpen();
+    try { getNative().storeRebuildIndexSync(this._nativeHandle); }
+    catch (err) { throw VivvyError.fromNativeError(err); }
   }
 
   /**
@@ -405,6 +501,21 @@ export class MemoryStore {
     if (opt.expiresAtMs != null) payload.expires_at_ms = opt.expiresAtMs;
     if (opt.operationId) payload.operation_id = opt.operationId;
     return payload;
+  }
+
+  private marshalScope(scope: MemoryScope): Record<string, unknown> {
+    return { tenant_id: scope.tenantId, namespace: scope.namespace, agent_id: scope.agentId ?? undefined, user_id: scope.userId ?? undefined };
+  }
+
+  private parseMemoryRecord(item: any): MemoryRecord {
+    return {
+      id: item.id, tenantId: item.tenant_id, namespace: item.namespace,
+      agentId: item.agent_id, userId: item.user_id, kind: item.kind as MemoryKind,
+      content: item.content, importance: item.importance,
+      createdAtMs: item.created_at_ms, updatedAtMs: item.updated_at_ms,
+      expiresAtMs: item.expires_at_ms, revision: item.revision,
+      metadata: item.metadata || {}, source: item.source || null,
+    };
   }
 
   private marshalRecall(opt: RecallOptions): Record<string, unknown> {

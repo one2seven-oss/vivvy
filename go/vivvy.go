@@ -80,6 +80,8 @@ const (
 	ErrCodeInvalidInput             = 12
 	ErrCodeStoreIOError             = 13
 	ErrCodeDatabaseError            = 14
+	ErrCodeEncryptionFailed         = 15
+	ErrCodeDecryptionFailed         = 16
 )
 
 // ErrClosed is returned by any Store method called after Close.
@@ -121,6 +123,9 @@ type OpenConfig struct {
 // MemoryRecord describes an observation to store via Store.Insert. The
 // embedding itself is passed as a separate argument, not a field here.
 type MemoryRecord struct {
+	// ID, timestamps, and Revision are populated when a record is returned by
+	// Get. They are ignored by Insert.
+	ID string
 	// OperationID, if set, makes this insert idempotent: retrying with the
 	// same OperationID returns the same result rather than duplicating data.
 	OperationID string
@@ -136,6 +141,81 @@ type MemoryRecord struct {
 	ExpiresAtMs *int64
 	Metadata    map[string]any
 	Source      map[string]any
+	CreatedAtMs int64
+	UpdatedAtMs int64
+	Revision    uint64
+}
+
+// Scope identifies the tenant and namespace containing a memory. AgentID and
+// UserID further narrow the scope when they were used at insert time.
+type Scope struct {
+	TenantID  string
+	Namespace string
+	AgentID   string
+	UserID    string
+}
+
+// UpdateRequest atomically changes a record when ExpectedRevision matches its
+// current revision. Leave optional fields nil to preserve their existing
+// values. Set ClearExpiresAt to remove an existing expiration.
+type UpdateRequest struct {
+	OperationID      string
+	Scope            Scope
+	ID               string
+	ExpectedRevision uint64
+	Content          *string
+	Kind             *MemoryKind
+	Importance       *float32
+	ExpiresAtMs      *int64
+	ClearExpiresAt   bool
+	MetadataPatch    map[string]any
+}
+
+// StoreHealth is a privacy-safe operational snapshot; it never includes
+// memory content or embeddings.
+type StoreHealth struct {
+	IsHealthy              bool
+	TotalActiveRecords     int
+	TotalTombstonedRecords int
+	PendingOperationsCount int
+	IndexRebuildRequired   bool
+	DBSizeBytes            uint64
+	WALSizeBytes           uint64
+}
+
+// IndexConfig configures a low-level vector index. Omit WALPath and DataDir
+// for an in-memory index; set both for durable WAL replay and compaction.
+type IndexConfig struct {
+	Dimensions int
+	Metric     string
+	WALPath    string
+	DataDir    string
+}
+
+// Filter is the recursive metadata-filter grammar accepted by Index.Search.
+// Exactly one operator should be set on each Filter value.
+type Filter struct {
+	Eq  *FilterEquals `json:"eq,omitempty"`
+	In  *FilterIn     `json:"in,omitempty"`
+	And []Filter      `json:"and,omitempty"`
+	Or  []Filter      `json:"or,omitempty"`
+	Not *Filter       `json:"not,omitempty"`
+}
+
+type FilterEquals struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+type FilterIn struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
+// SearchResult is one nearest-neighbour result from a low-level Index.
+type SearchResult struct {
+	ID       uint64  `json:"id"`
+	Distance float32 `json:"distance"`
 }
 
 // ScoringConfig customizes candidate reranking weights and decay.
@@ -248,6 +328,61 @@ type insertRecordJSON struct {
 	Source      map[string]any `json:"source,omitempty"`
 }
 
+type scopeJSON struct {
+	TenantID  string  `json:"tenant_id"`
+	Namespace string  `json:"namespace"`
+	AgentID   *string `json:"agent_id,omitempty"`
+	UserID    *string `json:"user_id,omitempty"`
+}
+
+type updateRequestJSON struct {
+	OperationID      *string        `json:"operation_id,omitempty"`
+	TenantID         string         `json:"tenant_id"`
+	Namespace        string         `json:"namespace"`
+	AgentID          *string        `json:"agent_id,omitempty"`
+	UserID           *string        `json:"user_id,omitempty"`
+	ID               string         `json:"id"`
+	ExpectedRevision uint64         `json:"expected_revision"`
+	Content          *string        `json:"content,omitempty"`
+	Kind             *string        `json:"kind,omitempty"`
+	Importance       *float32       `json:"importance,omitempty"`
+	MetadataPatch    map[string]any `json:"metadata_patch,omitempty"`
+}
+
+type memoryRecordJSON struct {
+	ID          string         `json:"id"`
+	TenantID    string         `json:"tenant_id"`
+	Namespace   string         `json:"namespace"`
+	AgentID     *string        `json:"agent_id"`
+	UserID      *string        `json:"user_id"`
+	Kind        string         `json:"kind"`
+	Content     string         `json:"content"`
+	Importance  float32        `json:"importance"`
+	CreatedAtMs int64          `json:"created_at_ms"`
+	UpdatedAtMs int64          `json:"updated_at_ms"`
+	ExpiresAtMs *int64         `json:"expires_at_ms"`
+	Revision    uint64         `json:"revision"`
+	Metadata    map[string]any `json:"metadata"`
+	Source      map[string]any `json:"source"`
+}
+
+type storeHealthJSON struct {
+	IsHealthy              bool   `json:"is_healthy"`
+	TotalActiveRecords     int    `json:"total_active_records"`
+	TotalTombstonedRecords int    `json:"total_tombstoned_records"`
+	PendingOperationsCount int    `json:"pending_operations_count"`
+	IndexRebuildRequired   bool   `json:"index_rebuild_required"`
+	DBSizeBytes            uint64 `json:"db_size_bytes"`
+	WALSizeBytes           uint64 `json:"wal_size_bytes"`
+}
+
+type indexConfigJSON struct {
+	Dimensions int     `json:"dimensions"`
+	Metric     string  `json:"metric"`
+	WALPath    *string `json:"wal_path,omitempty"`
+	DataDir    *string `json:"data_dir,omitempty"`
+}
+
 type recallOptionsJSON struct {
 	TenantID            string         `json:"tenant_id"`
 	Namespace           string         `json:"namespace"`
@@ -310,6 +445,77 @@ func nonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func marshalScope(scope Scope) ([]byte, error) {
+	return json.Marshal(scopeJSON{
+		TenantID:  scope.TenantID,
+		Namespace: scope.Namespace,
+		AgentID:   nonEmpty(scope.AgentID),
+		UserID:    nonEmpty(scope.UserID),
+	})
+}
+
+func marshalUpdate(req UpdateRequest) ([]byte, error) {
+	var kind *string
+	if req.Kind != nil {
+		value := string(*req.Kind)
+		kind = &value
+	}
+	payload, err := json.Marshal(updateRequestJSON{
+		OperationID:      nonEmpty(req.OperationID),
+		TenantID:         req.Scope.TenantID,
+		Namespace:        req.Scope.Namespace,
+		AgentID:          nonEmpty(req.Scope.AgentID),
+		UserID:           nonEmpty(req.Scope.UserID),
+		ID:               req.ID,
+		ExpectedRevision: req.ExpectedRevision,
+		Content:          req.Content,
+		Kind:             kind,
+		Importance:       req.Importance,
+		MetadataPatch:    req.MetadataPatch,
+	})
+	if err != nil || (!req.ClearExpiresAt && req.ExpiresAtMs == nil) {
+		return payload, err
+	}
+
+	// A Go struct cannot represent the three wire states required here:
+	// omitted = preserve, integer = set, JSON null = clear. Add the final
+	// field after normal marshaling to preserve that distinction.
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, fmt.Errorf("vivvy: unmarshal update payload: %w", err)
+	}
+	if req.ClearExpiresAt {
+		fields["expires_at_ms"] = nil
+	} else {
+		fields["expires_at_ms"] = *req.ExpiresAtMs
+	}
+	return json.Marshal(fields)
+}
+
+func convertMemoryRecord(raw memoryRecordJSON) *MemoryRecord {
+	record := &MemoryRecord{
+		ID:          raw.ID,
+		TenantID:    raw.TenantID,
+		Namespace:   raw.Namespace,
+		Kind:        MemoryKind(raw.Kind),
+		Content:     raw.Content,
+		Importance:  &raw.Importance,
+		ExpiresAtMs: raw.ExpiresAtMs,
+		Metadata:    raw.Metadata,
+		Source:      raw.Source,
+		CreatedAtMs: raw.CreatedAtMs,
+		UpdatedAtMs: raw.UpdatedAtMs,
+		Revision:    raw.Revision,
+	}
+	if raw.AgentID != nil {
+		record.AgentID = *raw.AgentID
+	}
+	if raw.UserID != nil {
+		record.UserID = *raw.UserID
+	}
+	return record
 }
 
 func kindStrings(kinds []MemoryKind) []string {
@@ -404,9 +610,206 @@ func floatPtr(vector []float32) (*C.float, C.size_t) {
 // must be called exactly once, after which every other method returns
 // ErrClosed.
 type Store struct {
+	mu             sync.RWMutex
+	ptr            *C.VivvyStore
+	closed         bool
+	dimensions     int
+	embeddingModel string
+}
+
+// Index is the low-level vector-search API. It is independent from Store:
+// it has no memory scopes, full-text search, or revision management.
+type Index struct {
 	mu     sync.RWMutex
-	ptr    *C.VivvyStore
+	ptr    *C.VivvyIndex
 	closed bool
+}
+
+// OpenIndex opens an in-memory or durable low-level vector index.
+func OpenIndex(cfg IndexConfig) (*Index, error) {
+	if cfg.Dimensions <= 0 {
+		return nil, fmt.Errorf("vivvy: IndexConfig.Dimensions must be > 0")
+	}
+	if cfg.Metric == "" {
+		cfg.Metric = "l2"
+	}
+	payload, err := json.Marshal(indexConfigJSON{
+		Dimensions: cfg.Dimensions,
+		Metric:     cfg.Metric,
+		WALPath:    nonEmpty(cfg.WALPath),
+		DataDir:    nonEmpty(cfg.DataDir),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vivvy: marshal index config: %w", err)
+	}
+	cConfig := C.CString(string(payload))
+	defer C.free(unsafe.Pointer(cConfig))
+	var handle *C.VivvyIndex
+	if code := C.vivvy_index_open(cConfig, &handle); code != 0 {
+		return nil, lastError(code)
+	}
+	index := &Index{ptr: handle}
+	runtime.SetFinalizer(index, (*Index).finalize)
+	return index, nil
+}
+
+func (i *Index) withHandle(fn func(*C.VivvyIndex) error) error {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.closed {
+		return ErrClosed
+	}
+	return fn(i.ptr)
+}
+
+// Close stops index background work and releases its native resources.
+func (i *Index) Close() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return ErrClosed
+	}
+	C.vivvy_index_close(i.ptr)
+	i.ptr = nil
+	i.closed = true
+	runtime.SetFinalizer(i, nil)
+	return nil
+}
+
+func (i *Index) finalize() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if !i.closed {
+		C.vivvy_index_close(i.ptr)
+		i.ptr = nil
+		i.closed = true
+	}
+}
+
+// Insert adds one vector, optionally with string metadata used by Filtered
+// Search, and returns its auto-generated ID.
+func (i *Index) Insert(vector []float32, metadata map[string]string) (uint64, error) {
+	var id uint64
+	err := i.withHandle(func(h *C.VivvyIndex) error {
+		var cMetadata *C.char
+		if len(metadata) > 0 {
+			payload, mErr := json.Marshal(metadata)
+			if mErr != nil {
+				return fmt.Errorf("vivvy: marshal metadata: %w", mErr)
+			}
+			cMetadata = C.CString(string(payload))
+			defer C.free(unsafe.Pointer(cMetadata))
+		}
+		vecPtr, vecLen := floatPtr(vector)
+		var outID C.uint64_t
+		if code := C.vivvy_index_insert(h, vecPtr, vecLen, cMetadata, &outID); code != 0 {
+			return lastError(code)
+		}
+		runtime.KeepAlive(vector)
+		id = uint64(outID)
+		return nil
+	})
+	return id, err
+}
+
+// InsertBatch atomically inserts vectors with auto-generated IDs. Metadata is
+// intentionally unavailable on this fast path; use Insert when filtering
+// fields are needed.
+func (i *Index) InsertBatch(vectors [][]float32) ([]uint64, error) {
+	if len(vectors) == 0 {
+		return []uint64{}, nil
+	}
+	var ids []uint64
+	err := i.withHandle(func(h *C.VivvyIndex) error {
+		dim := len(vectors[0])
+		flat := make([]float32, 0, dim*len(vectors))
+		for _, vector := range vectors {
+			if len(vector) != dim {
+				return fmt.Errorf("vivvy: all batch vectors must have the same dimension")
+			}
+			flat = append(flat, vector...)
+		}
+		vectorPtr, _ := floatPtr(flat)
+		var outJSON *C.char
+		if code := C.vivvy_index_insert_batch(h, vectorPtr, C.size_t(dim), C.size_t(len(vectors)), &outJSON); code != 0 {
+			return lastError(code)
+		}
+		runtime.KeepAlive(flat)
+		defer C.vivvy_free_string(outJSON)
+		if uErr := json.Unmarshal([]byte(C.GoString(outJSON)), &ids); uErr != nil {
+			return fmt.Errorf("vivvy: unmarshal index batch IDs: %w", uErr)
+		}
+		return nil
+	})
+	return ids, err
+}
+
+// InsertWithID inserts or replaces a vector with an application-supplied ID.
+func (i *Index) InsertWithID(id uint64, vector []float32) error {
+	return i.withHandle(func(h *C.VivvyIndex) error {
+		vecPtr, vecLen := floatPtr(vector)
+		if code := C.vivvy_index_insert_with_id(h, C.uint64_t(id), vecPtr, vecLen); code != 0 {
+			return lastError(code)
+		}
+		runtime.KeepAlive(vector)
+		return nil
+	})
+}
+
+// Delete soft-deletes an ID and reports whether it existed in the mutable
+// portion of the index.
+func (i *Index) Delete(id uint64) (bool, error) {
+	var deleted bool
+	err := i.withHandle(func(h *C.VivvyIndex) error {
+		var outDeleted C.int
+		if code := C.vivvy_index_delete(h, C.uint64_t(id), &outDeleted); code != 0 {
+			return lastError(code)
+		}
+		deleted = outDeleted != 0
+		return nil
+	})
+	return deleted, err
+}
+
+// Search returns up to k nearest vectors. Pass nil for an unfiltered search.
+func (i *Index) Search(query []float32, k int, filter *Filter) ([]SearchResult, error) {
+	if k <= 0 {
+		return []SearchResult{}, nil
+	}
+	var results []SearchResult
+	err := i.withHandle(func(h *C.VivvyIndex) error {
+		var cFilter *C.char
+		if filter != nil {
+			payload, mErr := json.Marshal(filter)
+			if mErr != nil {
+				return fmt.Errorf("vivvy: marshal filter: %w", mErr)
+			}
+			cFilter = C.CString(string(payload))
+			defer C.free(unsafe.Pointer(cFilter))
+		}
+		queryPtr, queryLen := floatPtr(query)
+		var outJSON *C.char
+		if code := C.vivvy_index_search(h, queryPtr, queryLen, C.size_t(k), cFilter, &outJSON); code != 0 {
+			return lastError(code)
+		}
+		runtime.KeepAlive(query)
+		defer C.vivvy_free_string(outJSON)
+		if uErr := json.Unmarshal([]byte(C.GoString(outJSON)), &results); uErr != nil {
+			return fmt.Errorf("vivvy: unmarshal index search results: %w", uErr)
+		}
+		return nil
+	})
+	return results, err
+}
+
+// Compact immediately compacts mutable vectors into the current index form.
+func (i *Index) Compact() error {
+	return i.withHandle(func(h *C.VivvyIndex) error {
+		if code := C.vivvy_index_compact(h); code != 0 {
+			return lastError(code)
+		}
+		return nil
+	})
 }
 
 // Open opens (or creates) a durable memory store at path.
@@ -438,7 +841,7 @@ func Open(path string, cfg OpenConfig) (*Store, error) {
 		return nil, lastError(code)
 	}
 
-	s := &Store{ptr: handle}
+	s := &Store{ptr: handle, dimensions: cfg.Dimensions, embeddingModel: cfg.EmbeddingModel}
 	// Backstop for callers that forget to Close explicitly; Close cancels
 	// this finalizer so the common, correct path never touches the GC.
 	runtime.SetFinalizer(s, (*Store).finalize)
@@ -523,6 +926,199 @@ func (s *Store) Insert(rec MemoryRecord, vector []float32) (string, error) {
 		return nil
 	})
 	return id, err
+}
+
+// InsertBatch stores records in one atomic transaction. Each vector must
+// correspond to the record at the same index.
+func (s *Store) InsertBatch(records []MemoryRecord, vectors [][]float32) ([]string, error) {
+	if len(records) != len(vectors) {
+		return nil, fmt.Errorf("vivvy: records and vectors must have the same length")
+	}
+	if len(records) == 0 {
+		return []string{}, nil
+	}
+
+	var ids []string
+	err := s.withHandle(func(h *C.VivvyStore) error {
+		dim := len(vectors[0])
+		flat := make([]float32, 0, len(records)*dim)
+		payloads := make([]insertRecordJSON, 0, len(records))
+		for i, rec := range records {
+			if len(vectors[i]) != dim {
+				return fmt.Errorf("vivvy: all batch vectors must have the same dimension")
+			}
+			kind := string(rec.Kind)
+			if kind == "" {
+				kind = string(KindFact)
+			}
+			payloads = append(payloads, insertRecordJSON{
+				OperationID: nonEmpty(rec.OperationID),
+				TenantID:    rec.TenantID,
+				Namespace:   rec.Namespace,
+				AgentID:     nonEmpty(rec.AgentID),
+				UserID:      nonEmpty(rec.UserID),
+				Content:     rec.Content,
+				Kind:        kind,
+				Importance:  rec.Importance,
+				ExpiresAtMs: rec.ExpiresAtMs,
+				Metadata:    rec.Metadata,
+				Source:      rec.Source,
+			})
+			flat = append(flat, vectors[i]...)
+		}
+		payload, mErr := json.Marshal(payloads)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal batch records: %w", mErr)
+		}
+		cRecords := C.CString(string(payload))
+		defer C.free(unsafe.Pointer(cRecords))
+		vecPtr, _ := floatPtr(flat)
+
+		var outIDs *C.char
+		code := C.vivvy_store_insert_batch(h, cRecords, vecPtr, C.size_t(dim), C.size_t(len(records)), &outIDs)
+		runtime.KeepAlive(flat)
+		if code != 0 {
+			return lastError(code)
+		}
+		defer C.vivvy_free_string(outIDs)
+		if uErr := json.Unmarshal([]byte(C.GoString(outIDs)), &ids); uErr != nil {
+			return fmt.Errorf("vivvy: unmarshal batch IDs: %w", uErr)
+		}
+		return nil
+	})
+	return ids, err
+}
+
+// Get fetches an active record by ID within a scope. It returns nil, nil when
+// the record does not exist or has been forgotten.
+func (s *Store) Get(scope Scope, id string) (*MemoryRecord, error) {
+	var record *MemoryRecord
+	err := s.withHandle(func(h *C.VivvyStore) error {
+		payload, mErr := marshalScope(scope)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal scope: %w", mErr)
+		}
+		cScope := C.CString(string(payload))
+		defer C.free(unsafe.Pointer(cScope))
+		cID := C.CString(id)
+		defer C.free(unsafe.Pointer(cID))
+
+		var outJSON *C.char
+		code := C.vivvy_store_get(h, cScope, cID, &outJSON)
+		if code != 0 {
+			return lastError(code)
+		}
+		defer C.vivvy_free_string(outJSON)
+		if C.GoString(outJSON) == "null" {
+			return nil
+		}
+		var raw memoryRecordJSON
+		if uErr := json.Unmarshal([]byte(C.GoString(outJSON)), &raw); uErr != nil {
+			return fmt.Errorf("vivvy: unmarshal record: %w", uErr)
+		}
+		record = convertMemoryRecord(raw)
+		return nil
+	})
+	return record, err
+}
+
+// Update atomically updates a record when ExpectedRevision matches. An empty
+// vector preserves the current embedding; a non-empty vector replaces it.
+func (s *Store) Update(req UpdateRequest, vector []float32) error {
+	if req.ClearExpiresAt && req.ExpiresAtMs != nil {
+		return fmt.Errorf("vivvy: ClearExpiresAt and ExpiresAtMs cannot both be set")
+	}
+	return s.withHandle(func(h *C.VivvyStore) error {
+		payload, mErr := marshalUpdate(req)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal update: %w", mErr)
+		}
+		cUpdate := C.CString(string(payload))
+		defer C.free(unsafe.Pointer(cUpdate))
+		vecPtr, vecLen := floatPtr(vector)
+		code := C.vivvy_store_update(h, cUpdate, vecPtr, vecLen)
+		runtime.KeepAlive(vector)
+		if code != 0 {
+			return lastError(code)
+		}
+		return nil
+	})
+}
+
+// Forget soft-deletes one record, immediately hiding it from Get and Recall.
+func (s *Store) Forget(scope Scope, id string) error {
+	return s.withHandle(func(h *C.VivvyStore) error {
+		payload, mErr := marshalScope(scope)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal scope: %w", mErr)
+		}
+		cScope := C.CString(string(payload))
+		defer C.free(unsafe.Pointer(cScope))
+		cID := C.CString(id)
+		defer C.free(unsafe.Pointer(cID))
+		if code := C.vivvy_store_forget(h, cScope, cID); code != 0 {
+			return lastError(code)
+		}
+		return nil
+	})
+}
+
+// ForgetBatch soft-deletes IDs in a scope as one transaction.
+func (s *Store) ForgetBatch(scope Scope, ids []string) error {
+	return s.withHandle(func(h *C.VivvyStore) error {
+		payload, mErr := marshalScope(scope)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal scope: %w", mErr)
+		}
+		idsJSON, mErr := json.Marshal(ids)
+		if mErr != nil {
+			return fmt.Errorf("vivvy: marshal IDs: %w", mErr)
+		}
+		cScope := C.CString(string(payload))
+		defer C.free(unsafe.Pointer(cScope))
+		cIDs := C.CString(string(idsJSON))
+		defer C.free(unsafe.Pointer(cIDs))
+		if code := C.vivvy_store_forget_batch(h, cScope, cIDs); code != 0 {
+			return lastError(code)
+		}
+		return nil
+	})
+}
+
+// Health returns a privacy-safe operational health snapshot.
+func (s *Store) Health() (*StoreHealth, error) {
+	var health *StoreHealth
+	err := s.withHandle(func(h *C.VivvyStore) error {
+		var outJSON *C.char
+		if code := C.vivvy_store_health(h, &outJSON); code != 0 {
+			return lastError(code)
+		}
+		defer C.vivvy_free_string(outJSON)
+		var raw storeHealthJSON
+		if uErr := json.Unmarshal([]byte(C.GoString(outJSON)), &raw); uErr != nil {
+			return fmt.Errorf("vivvy: unmarshal health: %w", uErr)
+		}
+		health = &StoreHealth{
+			IsHealthy: raw.IsHealthy, TotalActiveRecords: raw.TotalActiveRecords,
+			TotalTombstonedRecords: raw.TotalTombstonedRecords,
+			PendingOperationsCount: raw.PendingOperationsCount,
+			IndexRebuildRequired:   raw.IndexRebuildRequired,
+			DBSizeBytes:            raw.DBSizeBytes, WALSizeBytes: raw.WALSizeBytes,
+		}
+		return nil
+	})
+	return health, err
+}
+
+// RebuildIndex rebuilds the in-memory vector accelerator from durable active
+// records.
+func (s *Store) RebuildIndex() error {
+	return s.withHandle(func(h *C.VivvyStore) error {
+		if code := C.vivvy_store_rebuild_index(h); code != 0 {
+			return lastError(code)
+		}
+		return nil
+	})
 }
 
 // Recall runs hybrid (vector + optional full-text) search and returns

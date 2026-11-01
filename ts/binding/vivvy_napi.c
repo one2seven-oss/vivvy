@@ -8,6 +8,10 @@ typedef struct {
     VivvyStore *store;
 } StoreWrapper;
 
+typedef struct {
+    VivvyIndex *index;
+} IndexWrapper;
+
 static void finalize_store(napi_env env, void *finalize_data, void *finalize_hint) {
     StoreWrapper *wrapper = (StoreWrapper *)finalize_data;
     if (wrapper) {
@@ -15,6 +19,14 @@ static void finalize_store(napi_env env, void *finalize_data, void *finalize_hin
             vivvy_store_close(wrapper->store);
             wrapper->store = NULL;
         }
+        free(wrapper);
+    }
+}
+
+static void finalize_index(napi_env env, void *finalize_data, void *finalize_hint) {
+    IndexWrapper *wrapper = (IndexWrapper *)finalize_data;
+    if (wrapper) {
+        if (wrapper->index) vivvy_index_close(wrapper->index);
         free(wrapper);
     }
 }
@@ -78,6 +90,25 @@ static StoreWrapper *get_store_wrapper(napi_env env, napi_value val) {
         return NULL;
     }
     return wrapper;
+}
+
+static IndexWrapper *get_index_wrapper(napi_env env, napi_value val) {
+    void *data = NULL;
+    if (!val || napi_unwrap(env, val, &data) != napi_ok || !data) {
+        napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "invalid index instance"));
+        return NULL;
+    }
+    IndexWrapper *wrapper = (IndexWrapper *)data;
+    if (!wrapper->index) {
+        napi_throw(env, create_vivvy_error(env, VIVVY_ERR_STORE_IO_ERROR, "index is closed"));
+        return NULL;
+    }
+    return wrapper;
+}
+
+static napi_value throw_last_error(napi_env env, int code) {
+    napi_throw(env, create_vivvy_error(env, code, vivvy_last_error_message()));
+    return NULL;
 }
 
 /* -------------------------------------------------------------------------
@@ -601,6 +632,133 @@ static napi_value Node_StoreVacuumSync(napi_env env, napi_callback_info info) {
     return js_res;
 }
 
+/* -------------------------------------------------------------------------
+ * Remaining synchronous MemoryStore operations
+ * ------------------------------------------------------------------------- */
+static napi_value Node_StoreInsertBatchSync(napi_env env, napi_callback_info info) {
+    size_t argc = 5; napi_value argv[5]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (argc < 5) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (store, records_json, vectors, dim, count)")); return NULL; }
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL;
+    char *records = get_string_utf8(env, argv[1]); size_t flat_len = 0; float *flat = get_float32_array(env, argv[2], &flat_len);
+    int64_t dim = 0, count = 0; napi_get_value_int64(env, argv[3], &dim); napi_get_value_int64(env, argv[4], &count);
+    if (!records || dim <= 0 || count < 0 || (count > 0 && !flat) || (size_t)(dim * count) != flat_len) { free(records); free(flat); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "invalid batch arguments")); return NULL; }
+    char *out = NULL; int rc = vivvy_store_insert_batch(w->store, records, flat, (size_t)dim, (size_t)count, &out); free(records); free(flat);
+    if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_string_utf8(env, out, NAPI_AUTO_LENGTH, &result); vivvy_free_string(out); return result;
+}
+
+static napi_value Node_StoreGetSync(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (argc < 3) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (store, scope_json, id)")); return NULL; }
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL;
+    char *scope = get_string_utf8(env, argv[1]); char *id = get_string_utf8(env, argv[2]);
+    if (!scope || !id) { free(scope); free(id); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "scope_json and id must be strings")); return NULL; }
+    char *out = NULL; int rc = vivvy_store_get(w->store, scope, id, &out); free(scope); free(id);
+    if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_string_utf8(env, out, NAPI_AUTO_LENGTH, &result); vivvy_free_string(out); return result;
+}
+
+static napi_value Node_StoreUpdateSync(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (argc < 3) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (store, update_json, vector_or_null)")); return NULL; }
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL;
+    char *update = get_string_utf8(env, argv[1]); size_t dim = 0; float *vector = get_float32_array(env, argv[2], &dim);
+    if (!update) { free(vector); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "update_json must be string")); return NULL; }
+    int rc = vivvy_store_update(w->store, update, vector, dim); free(update); free(vector);
+    if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
+static napi_value Node_StoreForgetSync(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (argc < 3) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (store, scope_json, id)")); return NULL; }
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL;
+    char *scope = get_string_utf8(env, argv[1]); char *id = get_string_utf8(env, argv[2]);
+    if (!scope || !id) { free(scope); free(id); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "scope_json and id must be strings")); return NULL; }
+    int rc = vivvy_store_forget(w->store, scope, id); free(scope); free(id); if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
+static napi_value Node_StoreForgetBatchSync(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (argc < 3) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (store, scope_json, ids_json)")); return NULL; }
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL;
+    char *scope = get_string_utf8(env, argv[1]); char *ids = get_string_utf8(env, argv[2]);
+    if (!scope || !ids) { free(scope); free(ids); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "scope_json and ids_json must be strings")); return NULL; }
+    int rc = vivvy_store_forget_batch(w->store, scope, ids); free(scope); free(ids); if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
+static napi_value Node_StoreHealthSync(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 1) return NULL;
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL; char *out = NULL;
+    int rc = vivvy_store_health(w->store, &out); if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_string_utf8(env, out, NAPI_AUTO_LENGTH, &result); vivvy_free_string(out); return result;
+}
+
+static napi_value Node_StoreRebuildIndexSync(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 1) return NULL;
+    StoreWrapper *w = get_store_wrapper(env, argv[0]); if (!w) return NULL; int rc = vivvy_store_rebuild_index(w->store);
+    if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
+/* -------------------------------------------------------------------------
+ * Low-level Index operations
+ * ------------------------------------------------------------------------- */
+static napi_value Node_IndexOpen(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    char *config = argc ? get_string_utf8(env, argv[0]) : NULL;
+    if (!config) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "config_json must be string")); return NULL; }
+    VivvyIndex *index = NULL; int rc = vivvy_index_open(config, &index); free(config); if (rc != 0) return throw_last_error(env, rc);
+    IndexWrapper *wrapper = malloc(sizeof(IndexWrapper)); if (!wrapper) { vivvy_index_close(index); napi_throw_error(env, NULL, "out of memory"); return NULL; }
+    wrapper->index = index; napi_value result; napi_create_object(env, &result); napi_wrap(env, result, wrapper, finalize_index, NULL, NULL); return result;
+}
+
+static napi_value Node_IndexClose(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (!argc) return NULL;
+    void *data = NULL; if (napi_unwrap(env, argv[0], &data) == napi_ok && data) { IndexWrapper *w = data; if (w->index) { vivvy_index_close(w->index); w->index = NULL; } } return NULL;
+}
+
+static napi_value Node_IndexInsert(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 3) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (index, vector, metadata_json_or_null)")); return NULL; }
+    IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL; size_t dim = 0; float *vector = get_float32_array(env, argv[1], &dim); char *metadata = get_string_utf8(env, argv[2]);
+    if (!vector) { free(metadata); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "vector must be non-empty Float32Array")); return NULL; }
+    uint64_t id = 0; int rc = vivvy_index_insert(w->index, vector, dim, metadata, &id); free(vector); free(metadata); if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_bigint_uint64(env, id, &result); return result;
+}
+
+static napi_value Node_IndexInsertWithID(napi_env env, napi_callback_info info) {
+    size_t argc = 3; napi_value argv[3]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 3) return NULL;
+    IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL; bool lossless = false; uint64_t id = 0;
+    napi_get_value_bigint_uint64(env, argv[1], &id, &lossless); size_t dim = 0; float *vector = get_float32_array(env, argv[2], &dim);
+    if (!lossless || !vector) { free(vector); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "id must be uint64 BigInt and vector Float32Array")); return NULL; }
+    int rc = vivvy_index_insert_with_id(w->index, id, vector, dim); free(vector); if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
+static napi_value Node_IndexInsertBatch(napi_env env, napi_callback_info info) {
+    size_t argc = 4; napi_value argv[4]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 4) return NULL;
+    IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL; size_t len = 0; float *flat = get_float32_array(env, argv[1], &len); int64_t dim = 0, count = 0;
+    napi_get_value_int64(env, argv[2], &dim); napi_get_value_int64(env, argv[3], &count);
+    if (!flat || dim <= 0 || count < 0 || (size_t)(dim * count) != len) { free(flat); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "invalid batch vectors")); return NULL; }
+    char *out = NULL; int rc = vivvy_index_insert_batch(w->index, flat, (size_t)dim, (size_t)count, &out); free(flat); if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_string_utf8(env, out, NAPI_AUTO_LENGTH, &result); vivvy_free_string(out); return result;
+}
+
+static napi_value Node_IndexSearch(napi_env env, napi_callback_info info) {
+    size_t argc = 4; napi_value argv[4]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 4) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "expected (index, query, k, filter_json_or_null)")); return NULL; }
+    IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL; size_t dim = 0; float *query = get_float32_array(env, argv[1], &dim); int64_t k = 0; napi_get_value_int64(env, argv[2], &k); char *filter = get_string_utf8(env, argv[3]);
+    if (!query || k <= 0) { free(query); free(filter); napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "query must be Float32Array and k positive")); return NULL; }
+    char *out = NULL; int rc = vivvy_index_search(w->index, query, dim, (size_t)k, filter, &out); free(query); free(filter); if (rc != 0) return throw_last_error(env, rc);
+    napi_value result; napi_create_string_utf8(env, out, NAPI_AUTO_LENGTH, &result); vivvy_free_string(out); return result;
+}
+
+static napi_value Node_IndexDelete(napi_env env, napi_callback_info info) {
+    size_t argc = 2; napi_value argv[2]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (argc < 2) return NULL; IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL;
+    bool lossless = false; uint64_t id = 0; napi_get_value_bigint_uint64(env, argv[1], &id, &lossless); if (!lossless) { napi_throw(env, create_vivvy_error(env, VIVVY_ERR_INVALID_INPUT, "id must be uint64 BigInt")); return NULL; }
+    int deleted = 0; int rc = vivvy_index_delete(w->index, id, &deleted); if (rc != 0) return throw_last_error(env, rc); napi_value result; napi_get_boolean(env, deleted != 0, &result); return result;
+}
+
+static napi_value Node_IndexCompact(napi_env env, napi_callback_info info) {
+    size_t argc = 1; napi_value argv[1]; napi_get_cb_info(env, info, &argc, argv, NULL, NULL); if (!argc) return NULL; IndexWrapper *w = get_index_wrapper(env, argv[0]); if (!w) return NULL; int rc = vivvy_index_compact(w->index); if (rc != 0) return throw_last_error(env, rc); return NULL;
+}
+
 static napi_value Node_LastError(napi_env env, napi_callback_info info) {
     const char *msg = vivvy_last_error_message();
     napi_value js_res;
@@ -628,6 +786,21 @@ NAPI_MODULE_INIT() {
     EXPORT_FN("storeFormatContextSync", Node_StoreFormatContextSync);
     EXPORT_FN("storeBackupSync", Node_StoreBackupSync);
     EXPORT_FN("storeVacuumSync", Node_StoreVacuumSync);
+    EXPORT_FN("storeInsertBatchSync", Node_StoreInsertBatchSync);
+    EXPORT_FN("storeGetSync", Node_StoreGetSync);
+    EXPORT_FN("storeUpdateSync", Node_StoreUpdateSync);
+    EXPORT_FN("storeForgetSync", Node_StoreForgetSync);
+    EXPORT_FN("storeForgetBatchSync", Node_StoreForgetBatchSync);
+    EXPORT_FN("storeHealthSync", Node_StoreHealthSync);
+    EXPORT_FN("storeRebuildIndexSync", Node_StoreRebuildIndexSync);
+    EXPORT_FN("indexOpen", Node_IndexOpen);
+    EXPORT_FN("indexClose", Node_IndexClose);
+    EXPORT_FN("indexInsert", Node_IndexInsert);
+    EXPORT_FN("indexInsertWithId", Node_IndexInsertWithID);
+    EXPORT_FN("indexInsertBatch", Node_IndexInsertBatch);
+    EXPORT_FN("indexSearch", Node_IndexSearch);
+    EXPORT_FN("indexDelete", Node_IndexDelete);
+    EXPORT_FN("indexCompact", Node_IndexCompact);
     EXPORT_FN("lastError", Node_LastError);
     return exports;
 }

@@ -1,6 +1,6 @@
 [package]
 name = "vivvy-ffi"
-version = "0.1.0"
+version = "0.1.1-alpha.1"
 edition = "2021"
 license = "BUSL-1.1"
 description = "C-compatible FFI layer for Vivvy, consumed by the Go bindings and other non-Rust hosts"
@@ -17,8 +17,8 @@ name = "vivvy_ffi"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-vivvy-core = { version = "0.1.0-alpha.1", path = "../vec" }
-vivvy-memory = { version = "0.1.0-alpha.1", path = "../ltm" }
+vivvy-core = { version = "0.1.1-alpha.1", path = "../vec" }
+vivvy-memory = { version = "0.1.1-alpha.1", path = "../ltm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"

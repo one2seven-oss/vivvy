@@ -41,7 +41,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bench"
-version = "0.1.0"
+version = "0.1.1-alpha.1"
 dependencies = [
  "rand",
  "tempfile",
@@ -1115,8 +1115,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vivvy"
+version = "0.1.1-alpha.1"
+dependencies = [
+ "vivvy-core",
+ "vivvy-embedder",
+ "vivvy-memory",
+]
+
+[[package]]
 name = "vivvy-core"
-version = "0.1.0-alpha.1"
+version = "0.1.1-alpha.1"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -1137,8 +1146,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vivvy-embedder"
+version = "0.1.1-alpha.1"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "vivvy-ffi"
-version = "0.1.0"
+version = "0.1.1-alpha.1"
 dependencies = [
  "libc",
  "serde",
@@ -1150,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "vivvy-memory"
-version = "0.1.0-alpha.1"
+version = "0.1.1-alpha.1"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.2.17",
@@ -1170,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "vivvy-py"
-version = "0.1.0-alpha.1"
+version = "0.1.1-alpha.1"
 dependencies = [
  "numpy",
  "pyo3",

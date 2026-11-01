@@ -76,7 +76,7 @@ class OpenAIEmbedder(Embedder):
         except ImportError as e:
             raise ImportError(
                 "The 'openai' package is required to use OpenAIEmbedder. "
-                "Install it with: pip install 'vivvy-vdb[openai]' or pip install openai"
+                "Install it with: pip install 'vivvy[openai]' or pip install openai"
             ) from e
 
         self._model = model
@@ -156,7 +156,7 @@ class SentenceTransformersEmbedder(Embedder):
         except ImportError as e:
             raise ImportError(
                 "The 'sentence-transformers' package is required to use SentenceTransformersEmbedder. "
-                "Install it with: pip install 'vivvy-vdb[sentence-transformers]' or pip install sentence-transformers"
+                "Install it with: pip install 'vivvy[sentence-transformers]' or pip install sentence-transformers"
             ) from e
 
         self._model_name = model_name_or_path

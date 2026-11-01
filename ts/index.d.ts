@@ -101,6 +101,54 @@ export interface MemoryRecord {
   source?: Record<string, unknown> | null;
 }
 
+export interface MemoryScope {
+  tenantId: string;
+  namespace: string;
+  agentId?: string | null;
+  userId?: string | null;
+}
+
+export interface UpdateOptions extends MemoryScope {
+  id: string;
+  expectedRevision: number;
+  operationId?: string | null;
+  content?: string;
+  kind?: MemoryKind;
+  importance?: number;
+  expiresAtMs?: number | null;
+  metadataPatch?: Record<string, unknown>;
+}
+
+export interface StoreHealth {
+  isHealthy: boolean;
+  totalActiveRecords: number;
+  totalTombstonedRecords: number;
+  pendingOperationsCount: number;
+  indexRebuildRequired: boolean;
+  dbSizeBytes: number;
+  walSizeBytes: number;
+}
+
+export interface IndexConfig {
+  dimensions: number;
+  metric?: 'l2' | 'cosine' | 'dot';
+  walPath?: string;
+  dataDir?: string;
+}
+
+export interface IndexFilter {
+  eq?: { field: string; value: string };
+  in?: { field: string; values: string[] };
+  and?: IndexFilter[];
+  or?: IndexFilter[];
+  not?: IndexFilter;
+}
+
+export interface VectorSearchResult {
+  id: number;
+  distance: number;
+}
+
 export interface RecallExplanation {
   totalScore: number;
   similarityScore: number;
@@ -188,7 +236,15 @@ export class MemoryStore {
 
   remember(options: RememberOptions, vector: Float32Array): Promise<string>;
   rememberSync(options: RememberOptions, vector: Float32Array): string;
+  rememberBatch(options: RememberOptions[], vectors: Float32Array[]): Promise<string[]>;
   rememberText(options: RememberOptions): Promise<string>;
+
+  get(scope: MemoryScope, id: string): MemoryRecord | null;
+  update(options: UpdateOptions, vector?: Float32Array): void;
+  forget(scope: MemoryScope, id: string): void;
+  forgetBatch(scope: MemoryScope, ids: string[]): void;
+  health(): StoreHealth;
+  rebuildIndex(): void;
 
   recall(
     options: RecallOptions,
@@ -222,4 +278,15 @@ export class MemoryStore {
 
   backup(targetPath: string): Promise<void>;
   vacuum(batchSize?: number): Promise<number>;
+}
+
+export class VectorIndex {
+  static open(config: IndexConfig): VectorIndex;
+  close(): void;
+  insert(vector: Float32Array, metadata?: Record<string, string>): bigint;
+  insertWithId(id: bigint, vector: Float32Array): void;
+  insertBatch(vectors: Float32Array[]): bigint[];
+  search(query: Float32Array, k: number, filter?: IndexFilter): VectorSearchResult[];
+  delete(id: bigint): boolean;
+  compact(): void;
 }
