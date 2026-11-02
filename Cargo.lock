@@ -157,6 +157,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1129,6 +1138,7 @@ version = "0.1.1-alpha.1"
 dependencies = [
  "arc-swap",
  "bytemuck",
+ "crc32fast",
  "fastrand",
  "futures",
  "log",
