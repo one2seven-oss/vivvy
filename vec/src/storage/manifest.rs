@@ -87,6 +87,18 @@ impl Manifest {
             file.sync_all()?;
         }
 
+        // Windows does not allow `rename` to replace an existing file. Remove
+        // the prior manifest first there; if the process stops between these
+        // operations, startup falls back to scanning the self-contained
+        // segment files.
+        #[cfg(windows)]
+        {
+            if let Err(error) = std::fs::remove_file(&target_path) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    return Err(error.into());
+                }
+            }
+        }
         std::fs::rename(&temp_path, &target_path)?;
         Ok(())
     }

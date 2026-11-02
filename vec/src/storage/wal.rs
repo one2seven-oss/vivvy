@@ -1,6 +1,6 @@
 use log::warn;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use thiserror::Error;
 
@@ -146,14 +146,22 @@ impl WalWriter {
     /// Remove all records after delta segments are compacted, retaining the
     /// durable v2 file header.
     pub fn reset(&mut self) -> Result<(), WalError> {
-        // Flush first so replacing this BufWriter cannot later drop buffered
-        // bytes into the file after it was truncated.
+        // Flush first, then replace the writer entirely. Reusing an append-mode
+        // handle after truncation has platform-specific cursor semantics; a
+        // fresh handle guarantees no pre-compaction records can be appended or
+        // replayed after reset.
         self.file.flush()?;
-        let file = self.file.get_mut();
-        file.set_len(WAL_HEADER_LEN)?;
-        file.seek(SeekFrom::Start(WAL_HEADER_LEN))?;
-        file.sync_all()?;
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .read(true)
+            .open(&self.path)?;
+        let mut replacement = BufWriter::new(file);
+        write_header(&mut replacement)?;
+        replacement.flush()?;
+        replacement.get_ref().sync_all()?;
         sync_parent_dir(&self.path)?;
+        self.file = replacement;
         self.committed = WAL_HEADER_LEN;
         self.needs_dir_sync = false;
         Ok(())
