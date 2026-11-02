@@ -2,6 +2,8 @@
 
 Thank you for helping improve Vivvy. All changes enter through a pull request (PR) to `main`; `main` is the only permanent integration branch. Maintainers review, test, approve, and merge every contribution.
 
+The upstream repository intentionally retains only `main` and branches that back active pull requests or active maintainer work. Merged working branches are deleted; their commits and PR history remain available in GitHub.
+
 ## Before you start
 
 Fork the repository on GitHub, then clone your fork and add the canonical project as `upstream`:
@@ -24,7 +26,7 @@ git push origin main
 
 ## Branch names
 
-Use lowercase kebab-case. A branch identifies both the kind of work and the subsystem it changes.
+Use lowercase kebab-case. Create a branch only for the contribution you are making; a branch identifies both the kind of work and the subsystem it changes.
 
 | Category | Purpose | Domains |
 | --- | --- | --- |
@@ -37,6 +39,8 @@ Use lowercase kebab-case. A branch identifies both the kind of work and the subs
 | `chore/<description>` or `chore/<domain>/<description>` | Tooling, dependencies, or build maintenance | `dependencies`, `build`, `tooling` |
 
 `recovery/<security|storage|ltm>/<description>` and `review/<description>` are reserved maintainer workflows. Do not use them for ordinary community contributions.
+
+The prefixes above are namespaces, not permanent branches. Never create placeholder branches such as `feat`, `fix`, or `experiment`. Delete your working branch after its PR merges.
 
 Examples:
 
@@ -62,7 +66,8 @@ cargo test --workspace
 # Cross-language verification on a Unix-like host
 make verify
 
-# Python bindings (after installing maturin and pytest)
+# Python bindings
+python -m pip install maturin numpy pytest
 maturin develop --manifest-path py/Cargo.toml
 python -m pytest py/tests
 ```
@@ -91,6 +96,6 @@ For suspected vulnerabilities, especially tenant-isolation, encryption, storage,
 
 ## Review and cleanup
 
-Maintainers may request design changes, tests, benchmarks, or documentation before approval. After a PR is merged, delete its working branch from your fork and local checkout. Do not delete unmerged work, recovery branches, or active experiments without maintainer approval. Recovery branches remain until their contents have been verified; review branches are temporary.
+Maintainers may request design changes, tests, benchmarks, or documentation before approval. After a PR is merged, delete its working branch from your fork and local checkout. The upstream branch is also removed once it is no longer needed, keeping the branch list focused on active work. Do not delete unmerged work, recovery branches, or active experiments without maintainer approval. Recovery branches remain until their contents have been verified; review branches are temporary.
 
 See [the detailed Git workflow](docs/development/git-workflow.md) for the branch lifecycle and maintainer controls.
