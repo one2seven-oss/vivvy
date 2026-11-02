@@ -3,7 +3,7 @@ use crate::filter::{FilterExpr, FilterIndex};
 use crate::hnsw::HnswIndex;
 use crate::storage::manifest::Manifest;
 use crate::storage::segments::{SealedSegment, SegmentWriter};
-use crate::storage::wal::{WalEntry, WalError, WalWriter};
+use crate::storage::wal::{WalDurability, WalEntry, WalError, WalWriter};
 use arc_swap::ArcSwap;
 use log::{info, warn};
 use parking_lot::{Mutex, RwLock};
@@ -53,6 +53,18 @@ impl VivvyIndex {
         wal_path: Option<impl AsRef<Path>>,
         data_dir: Option<impl AsRef<Path>>,
     ) -> Result<Self, VivvyError> {
+        Self::new_with_wal_durability(dims, metric, wal_path, data_dir, WalDurability::Sync)
+    }
+
+    /// Construct an index with an explicit WAL durability policy. `new` keeps
+    /// the original synchronous-on-each-commit behavior.
+    pub fn new_with_wal_durability(
+        dims: usize,
+        metric: Metric,
+        wal_path: Option<impl AsRef<Path>>,
+        data_dir: Option<impl AsRef<Path>>,
+        wal_durability: WalDurability,
+    ) -> Result<Self, VivvyError> {
         let shards = (0..NUM_SHARDS)
             .map(|_| RwLock::new(HnswIndex::new(dims, metric)))
             .collect::<Vec<_>>();
@@ -63,7 +75,7 @@ impl VivvyIndex {
 
         //  Replay uncompacted WAL entries if existing WAL is present
         if let Some(ref path) = wal_path {
-            WalWriter::replay(path.as_ref(), |entry| match entry {
+            WalWriter::replay_with_expected_dim(path.as_ref(), Some(dims), |entry| match entry {
                 WalEntry::Insert { id, vector } => {
                     tombstoned_ids.write().remove(id);
                     let shard = shard_idx(id, NUM_SHARDS);
@@ -82,7 +94,7 @@ impl VivvyIndex {
 
         let wal = wal_path
             .as_ref()
-            .map(WalWriter::open)
+            .map(|path| WalWriter::open_after_recovery(path, wal_durability))
             .transpose()?
             .map(|w| Arc::new(Mutex::new(w)));
         let data_dir = data_dir.map(|p| p.as_ref().to_path_buf());
@@ -675,7 +687,7 @@ fn timestamp_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufWriter;
+    use std::io::{BufWriter, Write};
     use tempfile::tempdir;
 
     #[test]
@@ -777,7 +789,9 @@ mod tests {
             1,
             "obsolete segment file must be reclaimed"
         );
-        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+        // A reset retains the durable v2 file header while removing all
+        // records, so an empty WAL is distinguishable from an old v1 file.
+        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 12);
         assert_eq!(idx.search(&[1.0, 0.0, 0.0], 1).unwrap()[0].0, 20);
 
         drop(idx);
@@ -987,5 +1001,25 @@ mod tests {
         let hits = idx.search(&[1.0, 0.0, 0.0], 2).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, 20);
+    }
+
+    #[test]
+    fn test_reopen_recovers_torn_wal_tail() {
+        let dir = tempdir().unwrap();
+        let wal = dir.path().join("test.wal");
+        let segments_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        {
+            let idx = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+            idx.insert_with_id(7, vec![1.0, 0.0, 0.0]).unwrap();
+        }
+        let mut file = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
+        // A partial record-length prefix models a process dying during append.
+        file.write_all(&[0x10, 0x00]).unwrap();
+        drop(file);
+
+        let reopened = VivvyIndex::new(3, Metric::L2, Some(&wal), Some(&segments_dir)).unwrap();
+        assert_eq!(reopened.search(&[1.0, 0.0, 0.0], 1).unwrap()[0].0, 7);
     }
 }
